@@ -1,0 +1,23 @@
+{
+  "runtime.version": "Lua 5.1",
+  "workspace.library": [
+    "C:/Users/veria/tools/tw_autogen/output/wh3/global",
+    "C:/Users/veria/tools/tw_autogen/output/wh3/campaign",
+    "C:/Users/veria/tools/tw_autogen/output/wh3/frontend"
+  ],
+  "workspace.preloadFileSize": 1500,
+  "workspace.ignoreSubmodules": false,
+  "diagnostics.disable": ["lowercase-global", "trailing-space"],
+  "diagnostics.globals": [
+    "out",
+    "get_campaign_manager",
+    "cm",
+    "core",
+    "common",
+    "effect",
+    "find_uicomponent",
+    "UIComponent",
+    "uicomponent_to_str",
+    "CampaignUI"
+  ]
+}

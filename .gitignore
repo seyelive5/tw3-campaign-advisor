@@ -1,0 +1,11 @@
+# 빌드 산출물
+/build/
+*.pack
+
+# 추출한 바닐라 CA 스크립트 — 레퍼런스 전용, 커밋 금지 (CA 저작권)
+/reference/vanilla_scripts/
+
+# OS / 에디터
+Thumbs.db
+desktop.ini
+.DS_Store
