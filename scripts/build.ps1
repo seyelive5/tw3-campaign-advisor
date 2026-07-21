@@ -2,19 +2,20 @@
   TW3 캠페인 어드바이저 — 빌드/배포 스크립트 (의존성 0, 순수 PowerShell)
   ------------------------------------------------------------------
   PFH5 pack 포맷은 실제 pack 해부로 도출·검증(-SelfTest, 바이트 일치).
+  포맷 상세: docs/pack_format.md
 
-  [로컬 모드 배포 방식 — 실측으로 결정됨]
-  CA 런처는 모드 목록을 "스팀 워크샵 구독"에서만 만든다(launcher.log의 STEAM DATA RAW).
-  => %APPDATA%\...\mods\ 에 넣은 로컬 pack은 런처에 안 뜬다.
-  대신 게임은 data\manifest.txt 에 등재된 pack을 로드한다. 바닐라 자동로드 스크립트
-  (battle_logging.lua 등)도 data_script.pack(타입1) 안에서 이 방식으로 로드된다.
-  => 우리 pack을 data\ 에 넣고 manifest.txt 에 등재하면 런처와 무관하게 항상 로드된다.
+  [배포/활성화 — 커뮤니티 표준 방식]
+  로컬 모드는 게임 data\ 폴더에 두면 모드 매니저가 인식한다.
+  이 프로젝트는 WH3 Mod Manager(Shazbot/WH3-Mod-Manager, wh3mm.exe)를 사용:
+    build -Deploy 로 pack을 data\ 에 복사 → wh3mm 목록에 로컬 모드로 뜸
+    → 체크(활성화) → wh3mm 이 used_mods.txt 생성 → Play 로 실행.
+  (CA 런처는 워크샵만 나열해 로컬 pack 무시. manifest.txt 편집은 비표준/Steam 검증시 소실 → 사용 안 함.)
 
   사용법:
     .\build.ps1              # src\ → build\campaign_advisor.pack (빌드만)
-    .\build.ps1 -Deploy      # 빌드 + data\ 설치 + manifest.txt 등재
-    .\build.ps1 -Undo        # data\ pack 제거 + manifest.txt 원복
-    .\build.ps1 -SelfTest    # 패커 정확성 왕복 검증
+    .\build.ps1 -Deploy      # 빌드 + data\ 로 복사 (wh3mm 이 인식)
+    .\build.ps1 -Undo        # data\ 에서 제거
+    .\build.ps1 -SelfTest    # 패커 정확성 왕복 검증(참조 pack 바이트 일치)
 #>
 [CmdletBinding()]
 param(
@@ -31,11 +32,11 @@ $BuildDir = Join-Path $ProjectRoot "build"
 
 # --- PFH5 직렬화 -------------------------------------------------------
 function Build-PackBytes {
-  param([object[]]$Entries, [uint32]$Timestamp = 0, [uint32]$PackType = 3)
+  param([object[]]$Entries, [uint32]$Timestamp = 0, [uint32]$PackType = 3)  # 3 = Mod
   $idx = New-Object System.IO.MemoryStream; $iw = New-Object System.IO.BinaryWriter($idx)
   foreach ($e in $Entries) {
-    $iw.Write([uint32]$e.Bytes.Length); $iw.Write([byte]0)
-    $iw.Write([System.Text.Encoding]::ASCII.GetBytes($e.Path)); $iw.Write([byte]0)
+    $iw.Write([uint32]$e.Bytes.Length); $iw.Write([byte]0)                    # 크기 + 압축플래그(비압축)
+    $iw.Write([System.Text.Encoding]::ASCII.GetBytes($e.Path)); $iw.Write([byte]0)  # 경로 + null
   }
   $iw.Flush(); $idxBytes = $idx.ToArray(); $iw.Dispose()
   $out = New-Object System.IO.MemoryStream; $ow = New-Object System.IO.BinaryWriter($out)
@@ -86,45 +87,26 @@ function Invoke-SelfTest {
   if ($same) { Write-Host "[자기검증] OK 바이트 완전 일치" -ForegroundColor Green } else { throw "[자기검증] 불일치" }
 }
 
-# --- manifest.txt 등재/원복 --------------------------------------------
-function Update-Manifest {
-  param([string]$PackName, [long]$Size, [switch]$Remove)
-  $mf = Join-Path $GameData "manifest.txt"
-  if (-not (Test-Path "$mf.bak")) { Copy-Item $mf "$mf.bak" -Force }   # 최초 1회 원본 백업
-  $raw = [System.IO.File]::ReadAllText($mf)
-  $eol = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
-  $escaped = [regex]::Escape($PackName)
-  $raw = [regex]::Replace($raw, "(?m)^$escaped`t[^\r\n]*\r?\n?", "")   # 기존 우리 줄 제거(idempotent)
-  if (-not $Remove) {
-    if ($raw.Length -gt 0 -and $raw[-1] -ne "`n") { $raw += $eol }
-    $raw += "$PackName`t$Size`t1" + $eol
-  }
-  [System.IO.File]::WriteAllText($mf, $raw)
-}
-
 # ======================= 메인 =======================
 if ($SelfTest) { Invoke-SelfTest; return }
 
+$dst = Join-Path $GameData $OutName
+
 if ($Undo) {
-  $dst = Join-Path $GameData $OutName
   if (Test-Path $dst) { Remove-Item $dst -Force; Write-Host "[원복] data\$OutName 제거" -ForegroundColor Cyan }
-  Update-Manifest -PackName $OutName -Size 0 -Remove
-  Write-Host "[원복] manifest.txt 에서 등재 제거 완료" -ForegroundColor Cyan
+  else { Write-Host "[원복] 이미 없음" }
   return
 }
 
 New-Item -ItemType Directory -Force $BuildDir | Out-Null
 $outFile = Join-Path $BuildDir $OutName
-# data\ 로드용은 바닐라 data_script.pack 과 동일하게 타입 1(Release)로 — 자동로드 검증된 방식 그대로
-$entries = New-TWPack -SourceDir $SrcDir -OutFile $outFile -PackType 1
+$entries = New-TWPack -SourceDir $SrcDir -OutFile $outFile     # 타입 3(Mod)
 $sz = (Get-Item $outFile).Length
-Write-Host ("[빌드] {0} ({1} 파일, {2:N0} bytes, 타입1)" -f $OutName, $entries.Count, $sz) -ForegroundColor Green
+Write-Host ("[빌드] {0} ({1} 파일, {2:N0} bytes, 타입3=Mod)" -f $OutName, $entries.Count, $sz) -ForegroundColor Green
 $entries | ForEach-Object { Write-Host ("  + {0}" -f $_.Path) }
 
 if ($Deploy) {
-  $dst = Join-Path $GameData $OutName
   Copy-Item $outFile $dst -Force
-  Update-Manifest -PackName $OutName -Size ((Get-Item $dst).Length)
   Write-Host ("[배포] → {0}" -f $dst) -ForegroundColor Cyan
-  Write-Host  "[배포] manifest.txt 등재 완료 → 런처 무관하게 항상 로드됨(끄려면 -Undo)" -ForegroundColor Cyan
+  Write-Host  "[배포] WH3 Mod Manager(wh3mm.exe) 목록에 로컬 모드로 뜸 → 체크 후 Play" -ForegroundColor Cyan
 }
