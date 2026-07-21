@@ -1,88 +1,69 @@
 <#
-  TW3 캠페인 어드바이저 — 빌드/패킹 스크립트 (의존성 0, 순수 PowerShell)
+  TW3 캠페인 어드바이저 — 빌드/배포 스크립트 (의존성 0, 순수 PowerShell)
   ------------------------------------------------------------------
-  PFH5 pack 포맷은 실제 바닐라/워크샵 pack을 해부해 도출·검증한 것이며,
-  -SelfTest 로 참조 pack과 바이트 단위 왕복 비교하여 정확성을 증명한다.
+  PFH5 pack 포맷은 실제 pack 해부로 도출·검증(-SelfTest, 바이트 일치).
 
-  포맷 요약(PFH5, WH3 8.1.1):
-    헤더(28B): "PFH5" + 비트마스크/타입(u32) + 의존성수(u32) + 의존성블록크기(u32)
-               + 파일수(u32) + 파일인덱스크기(u32) + 타임스탬프(u32)
-    인덱스 엔트리: 크기(u32) + 압축플래그(1B, 비압축=0) + 경로(백슬래시, null 종료)
-    이후: 파일 데이터 연속
+  [로컬 모드 배포 방식 — 실측으로 결정됨]
+  CA 런처는 모드 목록을 "스팀 워크샵 구독"에서만 만든다(launcher.log의 STEAM DATA RAW).
+  => %APPDATA%\...\mods\ 에 넣은 로컬 pack은 런처에 안 뜬다.
+  대신 게임은 data\manifest.txt 에 등재된 pack을 로드한다. 바닐라 자동로드 스크립트
+  (battle_logging.lua 등)도 data_script.pack(타입1) 안에서 이 방식으로 로드된다.
+  => 우리 pack을 data\ 에 넣고 manifest.txt 에 등재하면 런처와 무관하게 항상 로드된다.
 
   사용법:
-    .\build.ps1              # src\ → build\campaign_advisor.pack
-    .\build.ps1 -Deploy      # 빌드 후 유저 mods 폴더로 복사
+    .\build.ps1              # src\ → build\campaign_advisor.pack (빌드만)
+    .\build.ps1 -Deploy      # 빌드 + data\ 설치 + manifest.txt 등재
+    .\build.ps1 -Undo        # data\ pack 제거 + manifest.txt 원복
     .\build.ps1 -SelfTest    # 패커 정확성 왕복 검증
 #>
 [CmdletBinding()]
 param(
   [switch]$Deploy,
+  [switch]$Undo,
   [switch]$SelfTest,
   [string]$OutName = "campaign_advisor.pack",
-  [string]$ModsDir = "$env:APPDATA\The Creative Assembly\Warhammer3\mods"
+  [string]$GameData = "C:\Program Files (x86)\Steam\steamapps\common\Total War WARHAMMER III\data"
 )
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 $SrcDir   = Join-Path $ProjectRoot "src"
 $BuildDir = Join-Path $ProjectRoot "build"
 
-# --- PFH5 직렬화 (핵심) -------------------------------------------------
+# --- PFH5 직렬화 -------------------------------------------------------
 function Build-PackBytes {
   param([object[]]$Entries, [uint32]$Timestamp = 0, [uint32]$PackType = 3)
-  $idx = New-Object System.IO.MemoryStream
-  $iw  = New-Object System.IO.BinaryWriter($idx)
+  $idx = New-Object System.IO.MemoryStream; $iw = New-Object System.IO.BinaryWriter($idx)
   foreach ($e in $Entries) {
-    $iw.Write([uint32]$e.Bytes.Length)                              # 크기
-    $iw.Write([byte]0)                                              # 압축 플래그(비압축)
-    $iw.Write([System.Text.Encoding]::ASCII.GetBytes($e.Path))     # 경로
-    $iw.Write([byte]0)                                             # null 종료
+    $iw.Write([uint32]$e.Bytes.Length); $iw.Write([byte]0)
+    $iw.Write([System.Text.Encoding]::ASCII.GetBytes($e.Path)); $iw.Write([byte]0)
   }
   $iw.Flush(); $idxBytes = $idx.ToArray(); $iw.Dispose()
-
-  $out = New-Object System.IO.MemoryStream
-  $ow  = New-Object System.IO.BinaryWriter($out)
+  $out = New-Object System.IO.MemoryStream; $ow = New-Object System.IO.BinaryWriter($out)
   $ow.Write([System.Text.Encoding]::ASCII.GetBytes('PFH5'))
-  $ow.Write([uint32]$PackType)        # 3 = Mod, 상위 플래그 없음
-  $ow.Write([uint32]0)                # 의존성 개수
-  $ow.Write([uint32]0)                # 의존성 블록 크기
-  $ow.Write([uint32]$Entries.Count)   # 파일 수
-  $ow.Write([uint32]$idxBytes.Length) # 파일 인덱스 크기
-  $ow.Write([uint32]$Timestamp)       # 타임스탬프
-  $ow.Write($idxBytes)
-  foreach ($e in $Entries) { $ow.Write($e.Bytes) }
-  $ow.Flush(); $bytes = $out.ToArray(); $ow.Dispose()
-  return ,$bytes
+  $ow.Write([uint32]$PackType); $ow.Write([uint32]0); $ow.Write([uint32]0)
+  $ow.Write([uint32]$Entries.Count); $ow.Write([uint32]$idxBytes.Length); $ow.Write([uint32]$Timestamp)
+  $ow.Write($idxBytes); foreach ($e in $Entries) { $ow.Write($e.Bytes) }
+  $ow.Flush(); $bytes = $out.ToArray(); $ow.Dispose(); return ,$bytes
 }
 
-# --- pack 읽기(파서: 자기검증/디버깅용) ---------------------------------
 function Read-Pack {
   param([string]$Path)
   $b = [System.IO.File]::ReadAllBytes($Path)
-  $depSize   = [BitConverter]::ToUInt32($b,12)
-  $fileCount = [BitConverter]::ToUInt32($b,16)
-  $ts        = [BitConverter]::ToUInt32($b,24)
-  $pos = 28 + $depSize
-  $entries = New-Object System.Collections.Generic.List[object]
+  $depSize = [BitConverter]::ToUInt32($b,12); $fileCount = [BitConverter]::ToUInt32($b,16); $ts = [BitConverter]::ToUInt32($b,24)
+  $pos = 28 + $depSize; $entries = New-Object System.Collections.Generic.List[object]
   for ($i=0; $i -lt $fileCount; $i++) {
-    $sz = [BitConverter]::ToUInt32($b,$pos); $pos += 4
-    $flag = $b[$pos]; $pos += 1
+    $sz = [BitConverter]::ToUInt32($b,$pos); $pos += 4; $flag = $b[$pos]; $pos += 1
     $start = $pos; while ($b[$pos] -ne 0) { $pos++ }
     $p = [System.Text.Encoding]::ASCII.GetString($b,$start,$pos-$start); $pos++
-    $entries.Add([pscustomobject]@{ Path=$p; Size=$sz; Flag=$flag; DataOffset=0 })
+    $entries.Add([pscustomobject]@{ Path=$p; Size=$sz; Flag=$flag })
   }
-  foreach ($e in $entries) {
-    $data = New-Object byte[] $e.Size
-    if ($e.Size -gt 0) { [Array]::Copy($b, $pos, $data, 0, $e.Size) }
-    $e | Add-Member -NotePropertyName Bytes -NotePropertyValue $data
-    $pos += $e.Size
-  }
+  foreach ($e in $entries) { $d = New-Object byte[] $e.Size; if ($e.Size -gt 0){[Array]::Copy($b,$pos,$d,0,$e.Size)}; $e | Add-Member Bytes $d; $pos += $e.Size }
   return [pscustomobject]@{ Timestamp=$ts; Entries=$entries }
 }
 
-# --- src 디렉터리 → pack 빌드 -------------------------------------------
+# --- src → pack ---------------------------------------------------------
 function New-TWPack {
-  param([string]$SourceDir, [string]$OutFile, [uint32]$Timestamp = 0)
+  param([string]$SourceDir, [string]$OutFile, [uint32]$Timestamp = 0, [uint32]$PackType = 3)
   $root = (Resolve-Path $SourceDir).Path.TrimEnd('\')
   $files = Get-ChildItem -LiteralPath $root -Recurse -File | Sort-Object { $_.FullName.ToLower() }
   if (-not $files) { throw "src에 파일이 없습니다: $root" }
@@ -90,44 +71,60 @@ function New-TWPack {
     $rel = $f.FullName.Substring($root.Length + 1) -replace '/', '\'
     [pscustomobject]@{ Path = $rel; Bytes = [System.IO.File]::ReadAllBytes($f.FullName) }
   }
-  $bytes = Build-PackBytes -Entries $entries -Timestamp $Timestamp
-  [System.IO.File]::WriteAllBytes($OutFile, $bytes)
+  [System.IO.File]::WriteAllBytes($OutFile, (Build-PackBytes -Entries $entries -Timestamp $Timestamp -PackType $PackType))
   return $entries
 }
 
-# --- 자기검증: 참조 pack 재패킹 → 바이트 비교 ---------------------------
+# --- 자기검증 -----------------------------------------------------------
 function Invoke-SelfTest {
   $ref = "C:\Program Files (x86)\Steam\steamapps\workshop\content\1142710\2789858755\@@@bettercameramod.pack"
-  if (-not (Test-Path $ref)) { Write-Warning "참조 pack 없음, 자기검증 건너뜀: $ref"; return }
-  $orig = [System.IO.File]::ReadAllBytes($ref)
-  $parsed = Read-Pack -Path $ref
-  # 원본 순서/타임스탬프 그대로 재직렬화
-  $rebuilt = Build-PackBytes -Entries $parsed.Entries -Timestamp $parsed.Timestamp
+  if (-not (Test-Path $ref)) { Write-Warning "참조 pack 없음, 건너뜀"; return }
+  $orig = [System.IO.File]::ReadAllBytes($ref); $parsed = Read-Pack -Path $ref
+  $rebuilt = Build-PackBytes -Entries $parsed.Entries -Timestamp $parsed.Timestamp -PackType 3
   $same = ($orig.Length -eq $rebuilt.Length)
-  if ($same) { for ($i=0; $i -lt $orig.Length; $i++) { if ($orig[$i] -ne $rebuilt[$i]) { $same=$false; $diffAt=$i; break } } }
-  Write-Host ("[자기검증] 참조: {0}" -f (Split-Path $ref -Leaf))
-  Write-Host ("[자기검증] 원본 {0}B / 재빌드 {1}B" -f $orig.Length, $rebuilt.Length)
-  if ($same) {
-    Write-Host "[자기검증] ✅ 바이트 단위 완전 일치 — 패커 정확성 증명됨" -ForegroundColor Green
-  } else {
-    Write-Host ("[자기검증] ❌ 불일치 (offset {0})" -f $diffAt) -ForegroundColor Red
-    throw "자기검증 실패"
+  if ($same) { for ($i=0;$i -lt $orig.Length;$i++){ if($orig[$i] -ne $rebuilt[$i]){$same=$false;break} } }
+  if ($same) { Write-Host "[자기검증] OK 바이트 완전 일치" -ForegroundColor Green } else { throw "[자기검증] 불일치" }
+}
+
+# --- manifest.txt 등재/원복 --------------------------------------------
+function Update-Manifest {
+  param([string]$PackName, [long]$Size, [switch]$Remove)
+  $mf = Join-Path $GameData "manifest.txt"
+  if (-not (Test-Path "$mf.bak")) { Copy-Item $mf "$mf.bak" -Force }   # 최초 1회 원본 백업
+  $raw = [System.IO.File]::ReadAllText($mf)
+  $eol = if ($raw -match "`r`n") { "`r`n" } else { "`n" }
+  $escaped = [regex]::Escape($PackName)
+  $raw = [regex]::Replace($raw, "(?m)^$escaped`t[^\r\n]*\r?\n?", "")   # 기존 우리 줄 제거(idempotent)
+  if (-not $Remove) {
+    if ($raw.Length -gt 0 -and $raw[-1] -ne "`n") { $raw += $eol }
+    $raw += "$PackName`t$Size`t1" + $eol
   }
+  [System.IO.File]::WriteAllText($mf, $raw)
 }
 
 # ======================= 메인 =======================
 if ($SelfTest) { Invoke-SelfTest; return }
 
+if ($Undo) {
+  $dst = Join-Path $GameData $OutName
+  if (Test-Path $dst) { Remove-Item $dst -Force; Write-Host "[원복] data\$OutName 제거" -ForegroundColor Cyan }
+  Update-Manifest -PackName $OutName -Size 0 -Remove
+  Write-Host "[원복] manifest.txt 에서 등재 제거 완료" -ForegroundColor Cyan
+  return
+}
+
 New-Item -ItemType Directory -Force $BuildDir | Out-Null
 $outFile = Join-Path $BuildDir $OutName
-$entries = New-TWPack -SourceDir $SrcDir -OutFile $outFile
+# data\ 로드용은 바닐라 data_script.pack 과 동일하게 타입 1(Release)로 — 자동로드 검증된 방식 그대로
+$entries = New-TWPack -SourceDir $SrcDir -OutFile $outFile -PackType 1
 $sz = (Get-Item $outFile).Length
-Write-Host ("[빌드] {0} ({1} 파일, {2:N0} bytes)" -f $OutName, $entries.Count, $sz) -ForegroundColor Green
+Write-Host ("[빌드] {0} ({1} 파일, {2:N0} bytes, 타입1)" -f $OutName, $entries.Count, $sz) -ForegroundColor Green
 $entries | ForEach-Object { Write-Host ("  + {0}" -f $_.Path) }
 
 if ($Deploy) {
-  New-Item -ItemType Directory -Force $ModsDir | Out-Null
-  Copy-Item $outFile (Join-Path $ModsDir $OutName) -Force
-  Write-Host ("[배포] → {0}\{1}" -f $ModsDir, $OutName) -ForegroundColor Cyan
-  Write-Host "[배포] 런처(또는 TWMM) 모드 목록에서 활성화 필요" -ForegroundColor Yellow
+  $dst = Join-Path $GameData $OutName
+  Copy-Item $outFile $dst -Force
+  Update-Manifest -PackName $OutName -Size ((Get-Item $dst).Length)
+  Write-Host ("[배포] → {0}" -f $dst) -ForegroundColor Cyan
+  Write-Host  "[배포] manifest.txt 등재 완료 → 런처 무관하게 항상 로드됨(끄려면 -Undo)" -ForegroundColor Cyan
 }
