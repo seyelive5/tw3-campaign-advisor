@@ -498,24 +498,22 @@ local function show_panel(prose)
 		if bg then pcall(function() bg:SetVisible(g_panel_shown) end) end
 		textc:SetVisible(g_panel_shown)
 		if g_panel_shown then
-			-- 가독성: 좁은 컬럼 + 좌측정렬 → 줄바꿈. 좌상단 배치. 배경 불투명↑.
-			local COL = 460
+			-- 가독성: 좁은 컬럼 좌측정렬 줄바꿈. 배경·텍스트를 도킹 대신 절대좌표로 정렬.
+			local COL, X, Y, PAD = 460, 24, 150, 18
 			pcall(function() textc:SetTextHAlign("left") end)
-			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 700) end)  -- 좁게 강제 → 자동 줄바꿈
-			local th = 240
-			pcall(function() local w, h = textc:Dimensions(); if h and h > 20 then th = h end end)
+			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 700) end)  -- 좁게 강제 → 줄바꿈
+			local tw, th = COL, 240
+			pcall(function() local w, h = textc:Dimensions(); if h and h > 20 then th = h; if w and w > 0 then tw = w end end end)
 			if bg then
 				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
-				pcall(function() bg:Resize(COL + 44, th + 28) end)
-				pcall(function() bg:SetOpacity(235) end)   -- 더 불투명(지도 비침 감소→대비↑)
+				pcall(function() bg:Resize(math.floor(tw + PAD * 2), math.floor(th + PAD * 2)) end)
+				pcall(function() bg:SetOpacity(230) end)
+				pcall(function() bg:MoveTo(X, Y) end)              -- ★배경을 명시 좌표로(도킹 무시)
 				bg:RegisterTopMost()
 			end
-			textc:RegisterTopMost()   -- 텍스트를 배경 위로
-			pcall(function()
-				local panel = find_uicomponent(root, PANEL_ID)
-				if panel then pcall(function() panel:Resize(COL + 44, th + 28) end); panel:MoveTo(24, 150) end
-			end)
-			proof(string.format("v13 패널(좁은컬럼 %dpx, 좌상단) 표시 th=%d", COL, th), true)
+			pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)   -- ★텍스트를 배경 안쪽으로
+			textc:RegisterTopMost()                                -- 텍스트를 배경 위로
+			proof(string.format("v14 패널(명시좌표) 표시 col=%d th=%d", COL, th), true)
 		end
 	end)
 end
