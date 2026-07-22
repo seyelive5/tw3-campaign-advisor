@@ -307,10 +307,28 @@ local function build_tooltip(S, D, cand, prof)
 end
 
 -- ── 자연어 산문 생성 (v9c) — 문구 풀 회전으로 다양화 ──
-local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면" }
-local PROSE_CONN = { "한편", "또한", "동시에", "이와 함께" }
+local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면", "보고드리자면", "냉정히 보면", "지금 국면은" }
+local PROSE_CONN = { "한편", "또한", "동시에", "이와 함께", "아울러", "그다음으로" }
 local function urgency(s)
 	if s >= 70 then return "가장 시급합니다" elseif s >= 45 then return "중요합니다" else return "고려할 만합니다" end
+end
+
+-- 한국어 조사 자동 선택: 마지막 한글 음절의 받침 유무로 결정 (Lua 5.1 산술만 사용).
+local function has_batchim(word)
+	local n = #word
+	if n < 3 then return nil end
+	local b1, b2, b3 = word:byte(n - 2), word:byte(n - 1), word:byte(n)
+	if not (b1 and b2 and b3) then return nil end
+	if b1 < 0xE0 or b1 > 0xEF then return nil end                 -- 3바이트 UTF-8(한글) 아님
+	local cp = (b1 % 0x10) * 4096 + (b2 % 0x40) * 64 + (b3 % 0x40)
+	if cp < 0xAC00 or cp > 0xD7A3 then return nil end             -- 한글 음절 범위 아님
+	return ((cp - 0xAC00) % 28) ~= 0                              -- 받침 있으면 true
+end
+-- pair = "은는"(받침용+무받침용, 각 한글 1자=3바이트). 한글 아니면 무받침형.
+local function josa(word, pair)
+	local b = has_batchim(word)
+	local withB, without = pair:sub(1, 3), pair:sub(4)
+	if b == true then return withB else return without end
 end
 
 local function build_prose(S, D, cand, prof)
@@ -325,10 +343,10 @@ local function build_prose(S, D, cand, prof)
 	elseif D.immediate == 1 then threat = string.format("국경에서 %s의 압박을 받고 있습니다", tostring(S.war_names[1] or "적"))
 	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
 	else threat = "국경은 평온합니다" end
-	P[#P+1] = string.format("%s, %s은(는) %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, tostring(num(S.turn, "?")), eco, threat)
+	P[#P+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은는"), tostring(num(S.turn, "?")), eco, threat)
 	-- 최우선 조언
 	if cand[1] then
-		P[#P+1] = string.format("무엇보다 %s이(가) %s — %s.", cand[1].label, urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
+		P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이가"), urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
 	end
 	-- 차선 조언
 	if cand[2] then
