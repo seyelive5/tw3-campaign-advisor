@@ -247,12 +247,35 @@ local function build_briefing(S, D, cand)
 	return table.concat(L, "\n")
 end
 
+-- 화면(툴팁)용 간략 브리핑 — g_click 증가시키지 않음(build_briefing과 별개).
+local function build_tooltip(S, D, cand)
+	local L = {}
+	L[#L+1] = string.format("[전략 브리핑] %s · %s턴", fname(S.faction), tostring(num(S.turn, "?")))
+	L[#L+1] = string.format("재정 %s (순 %s) · 영토 %s · 필드군 %s",
+		tostring(num(S.treasury, "?")),
+		((num(S.net, 0) >= 0) and ("+" .. num(S.net, 0)) or tostring(S.net)),
+		tostring(num(S.regions, "?")), tostring(num(S.generals, "?")))
+	L[#L+1] = "종합: " .. overall(S, D)
+	for i = 1, math.min(#cand, 3) do
+		local c = cand[i]
+		local r0 = (#c.reasons > 0) and c.reasons[1] or "(기본)"
+		L[#L+1] = string.format("%d. [%s·%s %d] %s", i, c.label, sev(c.score), c.score, r0)
+	end
+	return table.concat(L, "\n")
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local D, cand = analyze(S)
-		proof(build_briefing(S, D, cand), true)
+		proof(build_briefing(S, D, cand), true)           -- 파일: 전체 브리핑
+		local tip = build_tooltip(S, D, cand)             -- 화면: 간략 브리핑
+		pcall(function()
+			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
+			if btn then btn:SetTooltipText(tip, "", true) end
+		end)
+		proof("2a 화면표시: 버튼 툴팁 갱신 시도(한글 렌더 확인용).", true)
 	end)
 	if not ok then proof("2a run_advisor 예외: " .. tostring(err), true) end
 end
@@ -277,7 +300,7 @@ local function create_advisor_button()
 		btn:MoveTo(math.floor(rw * 0.45), 90)
 		btn:SetVisible(true); btn:SetInteractive(true); btn:SetDisabled(false)
 		btn:RegisterTopMost(); btn:SetMoveable(true)
-		pcall(function() btn:SetTooltipText("Advisor: strategic briefing (click)", "", true) end)
+		pcall(function() btn:SetTooltipText("전략 어드바이저 — 클릭하면 브리핑 생성 (마우스 올려 확인)", "", true) end)
 		proof("2a 버튼 생성 OK id=" .. tostring(btn:Id()), true)
 	end)
 	if not ok then proof("2a !!! 버튼 생성 예외: " .. tostring(err), true) end
