@@ -354,11 +354,10 @@ local function has_batchim(word)
 	if cp < 0xAC00 or cp > 0xD7A3 then return nil end             -- 한글 음절 범위 아님
 	return ((cp - 0xAC00) % 28) ~= 0                              -- 받침 있으면 true
 end
--- pair = "은는"(받침용+무받침용, 각 한글 1자=3바이트). 한글 아니면 무받침형.
-local function josa(word, pair)
-	local b = has_batchim(word)
-	local withB, without = pair:sub(1, 3), pair:sub(4)
-	if b == true then return withB else return without end
+-- 조사 선택: 받침 있으면 withB, 없으면(또는 비한글) without.
+-- ※ WH3 Lua의 string.sub은 문자 단위라 pair 분리가 깨짐 → 조사를 개별 인자로 받는다(실측 버그 회피).
+local function josa(word, withB, without)
+	if has_batchim(word) == true then return withB else return without end
 end
 
 local function build_prose(S, D, cand, prof)
@@ -373,20 +372,20 @@ local function build_prose(S, D, cand, prof)
 	elseif D.immediate == 1 then threat = string.format("국경에서 %s의 압박을 받고 있습니다", tostring(S.war_names[1] or "적"))
 	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
 	else threat = "국경은 평온합니다" end
-	P[#P+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은는"), tostring(num(S.turn, "?")), eco, threat)
+	P[#P+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), eco, threat)
 	-- 최우선 조언
 	if cand[1] then
-		P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이가"), urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
+		P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
 	end
 	-- 차선 조언
 	if cand[2] then
 		P[#P+1] = string.format("%s %s도 챙기세요(%s).", rot(PROSE_CONN), cand[2].label, tostring(cand[2].reasons[1] or ""))
 	end
-	-- 진영 특색
-	if prof and prof.sig and prof.sig.note then
+	-- 진영 특색 (팁 우선; 시그니처는 이미 후보로 등장할 수 있어 중복 회피. 오프셋으로 다른 팁 선택)
+	if prof and prof.tips and #prof.tips > 0 then
+		P[#P+1] = string.format("%s답게, %s.", race, tostring(prof.tips[g_click % #prof.tips + 1]))
+	elseif prof and prof.sig and prof.sig.note then
 		P[#P+1] = string.format("%s답게, %s.", race, prof.sig.note)
-	elseif prof and prof.tips and #prof.tips > 0 then
-		P[#P+1] = tostring(prof.tips[(g_click - 1) % #prof.tips + 1]) .. "."
 	end
 	-- 군주 한마디
 	if S.leader_key and prof and prof.lords and prof.lords[S.leader_key] then
