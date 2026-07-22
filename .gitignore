@@ -2,9 +2,10 @@
 /build/
 *.pack
 
-# 추출한 바닐라 CA 스크립트/DB — 레퍼런스 전용, 커밋 금지 (CA 저작권; 스크립트로 재현 가능)
+# 추출한 바닐라 CA 스크립트/DB/UI레이아웃 — 레퍼런스 전용, 커밋 금지 (CA 저작권; 추출로 재현 가능)
 /reference/vanilla_scripts/
 /reference/cai/
+/reference/ui_layouts/
 
 # OS / 에디터
 Thumbs.db

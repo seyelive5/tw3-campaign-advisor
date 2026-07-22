@@ -468,83 +468,42 @@ local function record_snapshot(S, hist)
 	end)
 end
 
--- ── 팝업 패널 (v10, 블라인드 — 여러 템플릿 시도 + 로깅) ──────────────
+-- ── 팝업 패널 (v11) — CA 공식 패턴: scripted_subtitles + text_child ──
+-- 근거: 바닐라 lib_campaign_manager.lua show_subtitle(). CreateComponent
+--   "UI/Common UI/scripted_subtitles.twui.xml" → find "text_child" 자식에 SetStateText.
 local PANEL_ID = "advisor_panel"
-local PANEL_TEMPLATES = {
-	"ui/templates/parchment_row", "ui/templates/panel_subtitle",
-	"ui/templates/stat_entry", "ui/templates/panel_title", "ui/templates/panel_frame",
-}
--- 패널 컴포넌트 확보(없으면 템플릿 순차 생성). 성공/실패 로깅.
+local g_panel_shown = false
 local function get_panel()
 	local panel = nil
 	pcall(function()
 		local root = core:get_ui_root()
-		local found = find_uicomponent(root, PANEL_ID)
-		if found then panel = found; return end
-		for _, tpl in ipairs(PANEL_TEMPLATES) do
-			local addr = root:CreateComponent(PANEL_ID, tpl)
-			if addr then
-				panel = UIComponent(addr)
-				local rw, rh = root:Dimensions()
-				pcall(function() panel:SetCanResizeWidth(true); panel:SetCanResizeHeight(true) end)
-				pcall(function() panel:Resize(math.floor(rw * 0.42), math.floor(rh * 0.42)) end)
-				panel:MoveTo(math.floor(rw * 0.29), 130)
-				panel:RegisterTopMost(); panel:SetMoveable(true); panel:SetVisible(false)
-				proof("v10 패널 생성 성공 template=" .. tpl, true)
-				break
-			end
-		end
-		if not panel then proof("v10 !!! 패널 생성 실패(모든 템플릿)", true) end
+		panel = find_uicomponent(root, PANEL_ID)
+		if panel then return end
+		local addr = root:CreateComponent(PANEL_ID, "UI/Common UI/scripted_subtitles.twui.xml")
+		if addr then panel = UIComponent(addr); proof("v11 패널 생성(scripted_subtitles)", true)
+		else proof("v11 !!! 패널 생성 실패", true) end
 	end)
 	return panel
 end
--- 패널에 텍스트 세팅 + 표시. 루트/자식 모두 시도(텍스트 위치 불확실).
+-- 버튼 클릭마다 토글(표시/숨김) + 텍스트 갱신. 텍스트는 text_child에.
 local function show_panel(prose)
 	pcall(function()
-		local panel = get_panel()
-		if not panel then return end
-		pcall(function() panel:SetStateText(prose, "") end)
-		-- 자식에도 시도(템플릿에 따라 텍스트가 자식에 있을 수 있음)
-		pcall(function()
-			for i = 0, panel:ChildCount() - 1 do
-				local c = UIComponent(panel:Find(i))
-				pcall(function() c:SetStateText(prose, "") end)
-			end
-		end)
-		panel:SetVisible(true); panel:RegisterTopMost()
-		local x, y = panel:Position(); local w, h = panel:Dimensions()
-		proof(string.format("v10 패널 표시 pos=(%d,%d) size=(%dx%d) 자식=%d", x, y, w, h, panel:ChildCount()), true)
-	end)
-end
-
--- ── 라이브 UI 텍스트 컴포넌트 스캐너 (개발용, 1회) — 복제 대상 발굴 ──
-local g_scanned = false
--- 전체 UI 트리를 들여쓰기로 덤프. ★TXT=텍스트 표시 컴포넌트(복제 후보).
-local function scan_all(comp, depth, out, cap)
-	if #out >= cap or depth > 9 then return end
-	local n = 0
-	pcall(function() n = comp:ChildCount() end)
-	for i = 0, n - 1 do
-		if #out >= cap then return end
-		local ok, child = pcall(function() return UIComponent(comp:Find(i)) end)
-		if ok and child then
-			local id = "?"; pcall(function() id = child:Id() end)
-			if id ~= "3d_ui_parent" and id ~= "settlement_labels" then   -- 맵 라벨 스팸 제외
-				local txt = ""; pcall(function() txt = child:GetStateText() end)
-				local mark = (txt and txt ~= "") and (" ★TXT=[" .. string.sub(tostring(txt), 1, 22) .. "]") or ""
-				out[#out + 1] = string.rep(". ", depth) .. tostring(id) .. mark
-				scan_all(child, depth + 1, out, cap)
-			end
+		if not get_panel() then return end
+		local root = core:get_ui_root()
+		local textc = find_uicomponent(root, PANEL_ID, "text_child")
+		if not textc then proof("v11 !!! text_child 못찾음", true); return end
+		pcall(function() textc:SetStateText(prose, "") end)
+		g_panel_shown = not g_panel_shown
+		textc:SetVisible(g_panel_shown)
+		if g_panel_shown then
+			textc:RegisterTopMost()
+			pcall(function()
+				local panel = find_uicomponent(root, PANEL_ID)
+				if panel then local rw, rh = root:Dimensions(); panel:MoveTo(math.floor(rw * 0.27), 120) end
+			end)
+			local x, y = textc:Position(); local w, h = textc:Dimensions()
+			proof(string.format("v11 패널 표시 pos=(%d,%d) size=(%dx%d)", x, y, w, h), true)
 		end
-	end
-end
-local function dump_text_scan()
-	pcall(function()
-		local out = {}
-		scan_all(core:get_ui_root(), 0, out, 900)
-		proof("════ 전체 UI 트리 덤프 (★TXT=텍스트 컴포넌트) ════", true)
-		for _, s in ipairs(out) do proof(s, true) end
-		proof(string.format("════ 덤프 끝 (%d개) ════", #out), true)
 	end)
 end
 
@@ -565,8 +524,7 @@ local function run_advisor()
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
-		show_panel(prose)                                  -- 화면: 팝업 패널(버튼=표시/갱신, 패널 클릭=닫기)
-		if not g_scanned then g_scanned = true; dump_text_scan() end   -- 1회: 라이브 UI 텍스트 컴포넌트 스캔
+		show_panel(prose)                                  -- 화면: 팝업 패널(버튼 클릭 = 토글 표시/갱신)
 		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
 	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
@@ -579,18 +537,7 @@ local function register_click_listener()
 		function(context) return context.string == BUTTON_ID end,
 		function(context) run_advisor() end,
 		true)
-	-- 패널 클릭 시 닫기
-	core:add_listener(
-		"advisor_panel_close", "ComponentLClickUp",
-		function(context) return context.string == PANEL_ID end,
-		function(context)
-			pcall(function()
-				local p = find_uicomponent(core:get_ui_root(), PANEL_ID)
-				if p then p:SetVisible(false) end
-			end)
-		end,
-		true)
-	proof("2a 클릭 리스너 등록 (버튼=" .. BUTTON_ID .. ", 패널닫기=" .. PANEL_ID .. ")", true)
+	proof("2a 클릭 리스너 등록 (버튼=" .. BUTTON_ID .. ")", true)
 end
 
 local function create_advisor_button()
