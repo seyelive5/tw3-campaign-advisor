@@ -468,6 +468,55 @@ local function record_snapshot(S, hist)
 	end)
 end
 
+-- ── 팝업 패널 (v10, 블라인드 — 여러 템플릿 시도 + 로깅) ──────────────
+local PANEL_ID = "advisor_panel"
+local PANEL_TEMPLATES = {
+	"ui/templates/parchment_row", "ui/templates/panel_subtitle",
+	"ui/templates/stat_entry", "ui/templates/panel_title", "ui/templates/panel_frame",
+}
+-- 패널 컴포넌트 확보(없으면 템플릿 순차 생성). 성공/실패 로깅.
+local function get_panel()
+	local panel = nil
+	pcall(function()
+		local root = core:get_ui_root()
+		local found = find_uicomponent(root, PANEL_ID)
+		if found then panel = found; return end
+		for _, tpl in ipairs(PANEL_TEMPLATES) do
+			local addr = root:CreateComponent(PANEL_ID, tpl)
+			if addr then
+				panel = UIComponent(addr)
+				local rw, rh = root:Dimensions()
+				pcall(function() panel:SetCanResizeWidth(true); panel:SetCanResizeHeight(true) end)
+				pcall(function() panel:Resize(math.floor(rw * 0.42), math.floor(rh * 0.42)) end)
+				panel:MoveTo(math.floor(rw * 0.29), 130)
+				panel:RegisterTopMost(); panel:SetMoveable(true); panel:SetVisible(false)
+				proof("v10 패널 생성 성공 template=" .. tpl, true)
+				break
+			end
+		end
+		if not panel then proof("v10 !!! 패널 생성 실패(모든 템플릿)", true) end
+	end)
+	return panel
+end
+-- 패널에 텍스트 세팅 + 표시. 루트/자식 모두 시도(텍스트 위치 불확실).
+local function show_panel(prose)
+	pcall(function()
+		local panel = get_panel()
+		if not panel then return end
+		pcall(function() panel:SetStateText(prose, "") end)
+		-- 자식에도 시도(템플릿에 따라 텍스트가 자식에 있을 수 있음)
+		pcall(function()
+			for i = 0, panel:ChildCount() - 1 do
+				local c = UIComponent(panel:Find(i))
+				pcall(function() c:SetStateText(prose, "") end)
+			end
+		end)
+		panel:SetVisible(true); panel:RegisterTopMost()
+		local x, y = panel:Position(); local w, h = panel:Dimensions()
+		proof(string.format("v10 패널 표시 pos=(%d,%d) size=(%dx%d) 자식=%d", x, y, w, h, panel:ChildCount()), true)
+	end)
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
@@ -485,6 +534,7 @@ local function run_advisor()
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
+		show_panel(prose)                                  -- 화면: 팝업 패널(버튼=표시/갱신, 패널 클릭=닫기)
 		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
 	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
@@ -497,7 +547,18 @@ local function register_click_listener()
 		function(context) return context.string == BUTTON_ID end,
 		function(context) run_advisor() end,
 		true)
-	proof("2a 클릭 리스너 등록 (id=" .. BUTTON_ID .. ")", true)
+	-- 패널 클릭 시 닫기
+	core:add_listener(
+		"advisor_panel_close", "ComponentLClickUp",
+		function(context) return context.string == PANEL_ID end,
+		function(context)
+			pcall(function()
+				local p = find_uicomponent(core:get_ui_root(), PANEL_ID)
+				if p then p:SetVisible(false) end
+			end)
+		end,
+		true)
+	proof("2a 클릭 리스너 등록 (버튼=" .. BUTTON_ID .. ", 패널닫기=" .. PANEL_ID .. ")", true)
 end
 
 local function create_advisor_button()
