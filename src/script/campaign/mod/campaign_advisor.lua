@@ -306,20 +306,65 @@ local function build_tooltip(S, D, cand, prof)
 	return table.concat(L, "\n")
 end
 
+-- ── 자연어 산문 생성 (v9c) — 문구 풀 회전으로 다양화 ──
+local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면" }
+local PROSE_CONN = { "한편", "또한", "동시에", "이와 함께" }
+local function urgency(s)
+	if s >= 70 then return "가장 시급합니다" elseif s >= 45 then return "중요합니다" else return "고려할 만합니다" end
+end
+
+local function build_prose(S, D, cand, prof)
+	local race = (prof and prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
+	local rot = function(t) return t[(g_click - 1) % #t + 1] end
+	local P = {}
+	-- 정세 도입
+	local eco = D.deficit and "재정은 적자라 주의가 필요하고"
+		or (D.net > 0 and string.format("재정은 순 +%d로 흑자이며", num(S.net, 0)) or "재정은 대체로 균형이고")
+	local threat
+	if D.immediate >= 2 then threat = "국경에서 여러 세력의 압박을 받고 있습니다"
+	elseif D.immediate == 1 then threat = string.format("국경에서 %s의 압박을 받고 있습니다", tostring(S.war_names[1] or "적"))
+	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
+	else threat = "국경은 평온합니다" end
+	P[#P+1] = string.format("%s, %s은(는) %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, tostring(num(S.turn, "?")), eco, threat)
+	-- 최우선 조언
+	if cand[1] then
+		P[#P+1] = string.format("무엇보다 %s이(가) %s — %s.", cand[1].label, urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
+	end
+	-- 차선 조언
+	if cand[2] then
+		P[#P+1] = string.format("%s %s도 챙기세요(%s).", rot(PROSE_CONN), cand[2].label, tostring(cand[2].reasons[1] or ""))
+	end
+	-- 진영 특색
+	if prof and prof.sig and prof.sig.note then
+		P[#P+1] = string.format("%s답게, %s.", race, prof.sig.note)
+	elseif prof and prof.tips and #prof.tips > 0 then
+		P[#P+1] = tostring(prof.tips[(g_click - 1) % #prof.tips + 1]) .. "."
+	end
+	-- 군주 한마디
+	if S.leader_key and prof and prof.lords and prof.lords[S.leader_key] then
+		local lord = prof.lords[S.leader_key]
+		P[#P+1] = string.format("%s: %s.", tostring(lord.name or "군주"), tostring(lord.note or ""))
+	end
+	return table.concat(P, " ")
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
 		local D, cand = analyze(S, prof)
-		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 전체 브리핑
-		local tip = build_tooltip(S, D, cand, prof)        -- 화면: 간략 브리핑
-		pcall(function()
+		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 구조화 블록
+		local prose = build_prose(S, D, cand, prof)        -- 자연어 산문
+		proof("[참모 브리핑] " .. prose, true)             -- 파일에도 산문 기록
+		local race = (prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
+		local tip = string.format("📋 %s 참모 브리핑 · %s턴\n%s", race, tostring(num(S.turn, "?")), prose)
+		pcall(function()                                   -- 화면: 산문 툴팁
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
 	end)
-	if not ok then proof("v9a run_advisor 예외: " .. tostring(err), true) end
+	if not ok then proof("v9c run_advisor 예외: " .. tostring(err), true) end
 end
 
 -- ── 버튼 + 리스너 (Step3/4 유지) ─────────────────────────────────────
