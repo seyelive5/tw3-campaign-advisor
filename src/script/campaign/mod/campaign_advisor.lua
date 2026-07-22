@@ -121,6 +121,8 @@ local function gather_state()
 	S.faction      = V(function() return f:name() end)
 	S.subculture   = V(function() return f:subculture() end)
 	S.culture      = V(function() return f:culture() end)
+	S.leader_name  = V(function() return f:faction_leader():get_forename() end)
+	S.leader_key   = V(function() return f:faction_leader():character_subtype_key() end)
 	S.turn         = V(function() return cm:turn_number() end)
 	S.treasury     = V(function() return f:treasury() end)
 	S.income       = V(function() return f:income() end)
@@ -212,6 +214,10 @@ local function analyze(S, prof)
 			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", wars) } }
 	end
 
+	-- 진영 시그니처 액션(프로필 정의) — 해당 차원으로 재가중됨
+	if prof and prof.sig and prof.sig.dim then
+		cand[#cand+1] = { key = prof.sig.dim, label = prof.sig.label or "진영", score = 52, reasons = { prof.sig.note or "" } }
+	end
 	-- 진영 프로필로 6차원 재가중 (상황 base 점수 × 진영 성향 가중치)
 	for i = 1, #cand do
 		local w = (prof and prof.pr and prof.pr[cand[i].key]) or 0.6
@@ -255,6 +261,11 @@ local function build_briefing(S, D, cand, prof)
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
+	end
+	if S.leader_name or S.leader_key then
+		L[#L+1] = string.format("👑 군주: %s  (키:%s)", tostring(S.leader_name or "?"), tostring(S.leader_key or "?"))
+		local ln = prof and prof.lords and S.leader_key and prof.lords[S.leader_key]
+		if ln then L[#L+1] = "   ↳ " .. tostring(ln) end
 	end
 	if prof and prof.tips and #prof.tips > 0 then
 		L[#L+1] = "💡 진영 팁: " .. prof.tips[(g_click - 1) % #prof.tips + 1]
