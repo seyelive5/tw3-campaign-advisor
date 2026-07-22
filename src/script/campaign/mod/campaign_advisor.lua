@@ -262,10 +262,14 @@ local function build_briefing(S, D, cand, prof)
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
 	end
-	if S.leader_name or S.leader_key then
-		L[#L+1] = string.format("👑 군주: %s  (키:%s)", tostring(S.leader_name or "?"), tostring(S.leader_key or "?"))
-		local ln = prof and prof.lords and S.leader_key and prof.lords[S.leader_key]
-		if ln then L[#L+1] = "   ↳ " .. tostring(ln) end
+	if S.leader_key then
+		local lord = prof and prof.lords and prof.lords[S.leader_key]
+		if lord then
+			L[#L+1] = "👑 군주: " .. tostring(lord.name or S.leader_key)
+			if lord.note then L[#L+1] = "   ↳ " .. tostring(lord.note) end
+		else
+			L[#L+1] = "👑 군주(미등록 키): " .. tostring(S.leader_key)   -- 실제 키 수집용
+		end
 	end
 	if prof and prof.tips and #prof.tips > 0 then
 		L[#L+1] = "💡 진영 팁: " .. prof.tips[(g_click - 1) % #prof.tips + 1]
