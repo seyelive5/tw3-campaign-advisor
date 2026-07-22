@@ -60,6 +60,46 @@ local function fname(key)
 	return FACTION_NAME[key] or key
 end
 
+-- 팩션 리스트 → 키 집합(set) {key=true}
+local function key_set(list_getter, cap)
+	local set, cnt = {}, 0
+	pcall(function()
+		local l = list_getter(); local n = l:num_items()
+		for i = 0, math.min(n, cap or 200) - 1 do set[l:item_at(i):name()] = true; cnt = cnt + 1 end
+	end)
+	return set, cnt
+end
+
+-- 실제 국경 인접: 내 지역들의 인접 지역 소유주 → 이웃 팩션 키 집합.
+-- (adjacency 폭주 방지 위해 총 검사 횟수 상한.)
+local function gather_neighbors(f, my_key)
+	local nb = {}
+	pcall(function()
+		local regions = f:region_list(); local rn = regions:num_items()
+		local checks = 0
+		for i = 0, rn - 1 do
+			if checks > 600 then break end
+			local reg = regions:item_at(i)
+			local adj = reg:adjacent_region_list(); local an = adj:num_items()
+			for j = 0, an - 1 do
+				checks = checks + 1
+				local a = adj:item_at(j)
+				local abandoned = false
+				pcall(function() abandoned = a:is_abandoned() end)
+				if not abandoned then
+					local ok = nil
+					pcall(function()
+						local o = a:owning_faction()
+						if o and not o:is_null_interface() then ok = o:name() end
+					end)
+					if ok and ok ~= my_key then nb[ok] = true end
+				end
+			end
+		end
+	end)
+	return nb
+end
+
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
 local function gather_state()
 	local f = nil
@@ -77,13 +117,22 @@ local function gather_state()
 	S.provinces    = V(function() return f:num_provinces() end)
 	S.armies       = LN(function() return f:military_force_list() end)  -- 수비대 포함
 	S.generals     = V(function() return f:num_generals() end)          -- ≈ 필드군
-	S.war_count    = LN(function() return f:factions_at_war_with() end)
 	S.research_idle= V(function() return f:research_queue_idle() end)
+
+	-- 전쟁 집합 + 국경 인접 → 즉각/먼 위협, 비적대 이웃 구분
+	local war_set, war_count = key_set(function() return f:factions_at_war_with() end, 60)
+	S.war_count = war_count
+	local neighbors = gather_neighbors(f, S.faction)
+	S.border_enemies, S.border_others = {}, {}
+	for k in pairs(neighbors) do
+		if war_set[k] then S.border_enemies[#S.border_enemies + 1] = k
+		else S.border_others[#S.border_others + 1] = k end
+	end
+	S.immediate = #S.border_enemies                      -- 바로 옆 적
+	S.distant   = math.max(0, war_count - S.immediate)   -- 국경 밖 전쟁(근사)
+	-- 표시용 이름(캡)
 	S.war_names = {}
-	pcall(function()
-		local wl = f:factions_at_war_with(); local n = wl:num_items()
-		for i = 0, math.min(n, 3) - 1 do S.war_names[#S.war_names + 1] = fname(wl:item_at(i):name()) end
-	end)
+	for i = 1, math.min(#S.border_enemies, 3) do S.war_names[#S.war_names + 1] = fname(S.border_enemies[i]) end
 	return S
 end
 
@@ -91,50 +140,63 @@ end
 local function analyze(S)
 	local regions  = num(S.regions, 0)
 	local field    = num(S.generals, 0)
-	local income   = num(S.income, 0)
 	local net      = num(S.net, 0)
 	local treasury = num(S.treasury, 0)
-	local threat   = num(S.war_count, 0)
+	local income   = num(S.income, 0)
+	local immediate= num(S.immediate, 0)   -- 바로 옆 적(국경 접촉)
+	local distant  = num(S.distant, 0)     -- 국경 밖 전쟁
+	local wars     = immediate + distant
+	local others   = S.border_others and #S.border_others or 0  -- 비적대 이웃
 	local deficit  = (S.losing == true) or (net < 0)
 	local density  = (regions > 0) and (field / regions) or 0
 	local buffer   = (income > 0) and (treasury / income) or 999
 
-	local D = { density = density, buffer = buffer, threat = threat, deficit = deficit, net = net }
+	local D = { density = density, buffer = buffer, immediate = immediate, distant = distant,
+	            wars = wars, others = others, deficit = deficit, net = net }
 	local cand = {}
 
-	-- 군사 (모집/증원)
+	-- 군사 (모집/증원) — 즉각 위협을 먼 전쟁보다 크게 가중
 	do
 		local sc, rs = SEED.army_base, {}
-		if threat > 0 then sc = sc + threat * 8; rs[#rs+1] = string.format("%d개 세력과 교전 중", threat) end
-		if regions > 0 and density < 1 then sc = sc + 20; rs[#rs+1] = string.format("영토 %d개 대비 필드군 %d개로 얇음", regions, field) end
+		if immediate > 0 then sc = sc + immediate * 12; rs[#rs+1] = string.format("국경 접한 적 %d개(즉각 위협)", immediate) end
+		if distant  > 0 then sc = sc + distant * 3;   rs[#rs+1] = string.format("국경 밖 전쟁 %d개", distant) end
+		if regions > 0 and density < 1 then sc = sc + 20; rs[#rs+1] = string.format("영토 %d 대비 필드군 %d로 얇음", regions, field) end
 		if deficit then sc = sc - 15; rs[#rs+1] = "적자라 모집 여력 제한" end
-		if net > 0 then sc = sc + 8; rs[#rs+1] = string.format("순수입 +%d 흑자로 모집 여력 있음", net) end
+		if net > 0 then sc = sc + 8; rs[#rs+1] = string.format("순수입 +%d로 모집 여력", net) end
 		cand[#cand+1] = { key = "military", label = "군사", score = clamp(sc, 0, 100), reasons = rs }
 	end
 	-- 경제 (건설/수입기반)
 	do
 		local sc, rs = SEED.cons_base, {}
 		if deficit then sc = sc + 30; rs[#rs+1] = "적자 — 수입 기반 확충 시급" end
-		if buffer < SEED.buffer_target then sc = sc + 15; rs[#rs+1] = string.format("재정 버퍼 %.1f턴치(CA 권장 %d턴 미만)", buffer, SEED.buffer_target) end
-		if threat == 0 then sc = sc + 12; rs[#rs+1] = "평시 — 성장 적기" end
-		if threat >= 2 then sc = sc - threat * 4; rs[#rs+1] = "다전선으로 건설 우선순위 하락" end
+		if buffer < SEED.buffer_target then sc = sc + 15; rs[#rs+1] = string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target) end
+		if buffer > 15 and not deficit then sc = sc + 10; rs[#rs+1] = string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer) end
+		if immediate == 0 then sc = sc + 12; rs[#rs+1] = "국경 평온 — 성장 적기" end
+		if immediate >= 2 then sc = sc - immediate * 4; rs[#rs+1] = "다전선 압박으로 건설 우선순위 하락" end
 		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = rs }
 	end
-	-- 방어 (전선 방어)
+	-- 방어 (전선 방어) — 국경 접한 적 중심
 	do
 		local sc, rs = 0, {}
-		if threat > 0 then sc = sc + threat * 12; rs[#rs+1] = string.format("%d개 전선", threat) end
+		if immediate > 0 then sc = sc + immediate * 15; rs[#rs+1] = string.format("국경 접한 적 %d개", immediate) end
 		if regions > 0 and density < 0.5 then sc = sc + 25; rs[#rs+1] = "군대 밀도 매우 낮음 — 방어 취약" end
 		if sc > 0 then cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = rs } end
+	end
+	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재
+	if immediate == 0 and net > 0 and buffer >= SEED.buffer_target and others > 0 then
+		local sc = 35 + ((density >= 1) and 15 or 0)
+		local tgt = fname(S.border_others[1])
+		cand[#cand+1] = { key = "expansion", label = "확장", score = clamp(sc, 0, 100),
+			reasons = { string.format("국경 평온+흑자, 인접 세력 %d개(%s 등) — 확장/선제 검토", others, tgt) } }
 	end
 	-- 기술 (연구)
 	if S.research_idle == true then
 		cand[#cand+1] = { key = "tech", label = "기술", score = 45, reasons = { "연구가 미가동 상태 — 즉시 착수 권장" } }
 	end
 	-- 외교 (동맹/화친)
-	if threat >= 2 then
-		cand[#cand+1] = { key = "diplomacy", label = "외교", score = clamp(30 + threat * 6, 0, 100),
-			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", threat) } }
+	if wars >= 2 then
+		cand[#cand+1] = { key = "diplomacy", label = "외교", score = clamp(30 + wars * 6, 0, 100),
+			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", wars) } }
 	end
 
 	table.sort(cand, function(a, b) return a.score > b.score end)
@@ -146,7 +208,10 @@ local function overall(S, D)
 	local p = {}
 	if num(S.turn, 99) <= 10 then p[#p+1] = "초반 확장기" end
 	if D.deficit then p[#p+1] = "적자 운영" elseif D.net > 0 then p[#p+1] = "흑자 운영" end
-	if D.threat >= 2 then p[#p+1] = "다전선 압박" elseif D.threat == 1 then p[#p+1] = "국지전 중" else p[#p+1] = "평시" end
+	if D.immediate >= 2 then p[#p+1] = "국경 다전선 압박"
+	elseif D.immediate == 1 then p[#p+1] = "국경 교전"
+	elseif D.wars > 0 then p[#p+1] = "원거리 전쟁만"
+	else p[#p+1] = "국경 평온" end
 	if D.density < 1 then p[#p+1] = "군대 얇음" end
 	return table.concat(p, " · ")
 end
@@ -167,8 +232,8 @@ local function build_briefing(S, D, cand)
 		tostring(num(S.treasury,"?")), tostring(num(S.income,"?")),
 		((num(S.net,0) >= 0) and ("+"..num(S.net,0)) or tostring(S.net)),
 		tostring(num(S.regions,"?")), tostring(num(S.generals,"?")), tostring(num(S.armies,"?")))
-	L[#L+1] = string.format("파생: 군대밀도 %.2f/영토 · 재정버퍼 %s · 교전 %d(%s)",
-		D.density, buffer_str, D.threat, wars)
+	L[#L+1] = string.format("파생: 군대밀도 %.2f · 재정버퍼 %s · 국경적 %d(%s) · 원거리전 %d · 비적대이웃 %d",
+		D.density, buffer_str, D.immediate, wars, D.distant, D.others)
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
 	L[#L+1] = "── 권장 행동 (점수 순) ──"
 	local shown = math.min(#cand, 3)
