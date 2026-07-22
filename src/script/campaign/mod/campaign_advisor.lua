@@ -111,6 +111,16 @@ local function gather_neighbors(f, my_key)
 	return nb
 end
 
+-- 팩션 강도 근사 = 소유 영토 수 (없으면 nil). 이웃 강약 평가용.
+local function faction_strength(key)
+	local r = nil
+	pcall(function()
+		local ff = cm:get_faction(key, false)
+		if ff and not ff:is_null_interface() then r = ff:region_list():num_items() end
+	end)
+	return r
+end
+
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
 local function gather_state()
 	local f = nil
@@ -145,6 +155,18 @@ local function gather_state()
 	end
 	S.immediate = #S.border_enemies                      -- 바로 옆 적
 	S.distant   = math.max(0, war_count - S.immediate)   -- 국경 밖 전쟁(근사)
+	-- 이웃 강약 평가: 비적대 이웃 중 최약(확장 표적), 국경 접한 적 중 최강(방어 경고)
+	S.my_regions = num(S.regions, 0)
+	S.weak_target, S.weak_target_r = nil, 9999
+	for i = 1, math.min(#S.border_others, 12) do
+		local r = faction_strength(S.border_others[i])
+		if r and r < S.weak_target_r then S.weak_target_r = r; S.weak_target = S.border_others[i] end
+	end
+	S.strong_enemy, S.strong_enemy_r = nil, -1
+	for i = 1, math.min(#S.border_enemies, 8) do
+		local r = faction_strength(S.border_enemies[i])
+		if r and r > S.strong_enemy_r then S.strong_enemy_r = r; S.strong_enemy = S.border_enemies[i] end
+	end
 	-- 표시용 이름(캡)
 	S.war_names = {}
 	for i = 1, math.min(#S.border_enemies, 3) do S.war_names[#S.war_names + 1] = fname(S.border_enemies[i]) end
@@ -195,14 +217,22 @@ local function analyze(S, prof)
 		local sc, rs = 0, {}
 		if immediate > 0 then sc = sc + immediate * 15; rs[#rs+1] = string.format("국경 접한 적 %d개", immediate) end
 		if regions > 0 and density < 0.5 then sc = sc + 25; rs[#rs+1] = "군대 밀도 매우 낮음 — 방어 취약" end
+		if S.strong_enemy and num(S.strong_enemy_r, 0) > num(S.my_regions, 0) then
+			sc = sc + 15
+			rs[#rs+1] = string.format("%s(영토 %d)가 우리(%d)보다 커 방어 강화 필요", fname(S.strong_enemy), num(S.strong_enemy_r, 0), num(S.my_regions, 0))
+		end
 		if sc > 0 then cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = rs } end
 	end
-	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재
+	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재. 약한 이웃을 표적으로 지목.
 	if immediate == 0 and net > 0 and buffer >= SEED.buffer_target and others > 0 then
 		local sc = 35 + ((density >= 1) and 15 or 0)
-		local tgt = fname(S.border_others[1])
-		cand[#cand+1] = { key = "expansion", label = "확장", score = clamp(sc, 0, 100),
-			reasons = { string.format("국경 평온+흑자, 인접 세력 %d개(%s 등) — 확장/선제 검토", others, tgt) } }
+		local reason
+		if S.weak_target then
+			reason = string.format("국경 평온+흑자, 약한 이웃 %s(영토 %d)를 선제 확장 표적으로 검토", fname(S.weak_target), num(S.weak_target_r, 0))
+		else
+			reason = string.format("국경 평온+흑자, 인접 세력 %d개 — 확장/선제 검토", others)
+		end
+		cand[#cand+1] = { key = "expansion", label = "확장", score = clamp(sc, 0, 100), reasons = { reason } }
 	end
 	-- 기술 (연구)
 	if S.research_idle == true then
