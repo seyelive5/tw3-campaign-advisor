@@ -528,18 +528,21 @@ local function scan_text(comp, path, depth, found, cap)
 		local ok, child = pcall(function() return UIComponent(comp:Find(i)) end)
 		if ok and child then
 			local id = "?"; pcall(function() id = child:Id() end)
-			local txt = ""; pcall(function() txt = child:GetStateText() end)
-			if txt and txt ~= "" then
-				found[#found + 1] = path .. "/" .. tostring(id) .. " = [" .. string.sub(tostring(txt), 1, 30) .. "]"
+			-- 맵 위 정착지 라벨 브랜치는 건너뜀(HUD 텍스트를 찾기 위해)
+			if id ~= "3d_ui_parent" and id ~= "settlement_labels" then
+				local txt = ""; pcall(function() txt = child:GetStateText() end)
+				if txt and txt ~= "" then
+					found[#found + 1] = path .. "/" .. tostring(id) .. " = [" .. string.sub(tostring(txt), 1, 30) .. "]"
+				end
+				scan_text(child, path .. "/" .. tostring(id), depth + 1, found, cap)
 			end
-			scan_text(child, path .. "/" .. tostring(id), depth + 1, found, cap)
 		end
 	end
 end
 local function dump_text_scan()
 	pcall(function()
 		local found = {}
-		scan_text(core:get_ui_root(), "root", 0, found, 45)
+		scan_text(core:get_ui_root(), "root", 0, found, 60)
 		proof("──── UI 텍스트 컴포넌트 스캔 (CopyComponent 후보) ────", true)
 		for _, s in ipairs(found) do proof("  " .. s, true) end
 		proof(string.format("──── 스캔 끝 (%d개) ────", #found), true)
