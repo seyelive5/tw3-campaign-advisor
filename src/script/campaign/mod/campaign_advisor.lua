@@ -505,9 +505,12 @@ local function show_panel(prose)
 			local tw, th = COL, 240
 			pcall(function() local w, h = textc:Dimensions(); if h and h > 20 then th = h; if w and w > 0 then tw = w end end end)
 			if bg then
+				-- 배경 이미지를 자막 배너 → 깔끔한 툴팁 프레임으로 교체 + CA 정확 9-slice 마진.
+				pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)
+				pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA값(top,right,bottom,left)
 				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
 				pcall(function() bg:Resize(math.floor(tw + PAD * 2), math.floor(th + PAD * 2)) end)
-				pcall(function() bg:SetOpacity(230) end)
+				pcall(function() bg:SetOpacity(255) end)
 				pcall(function() bg:MoveTo(X, Y) end)              -- ★배경을 명시 좌표로(도킹 무시)
 				bg:RegisterTopMost()
 			end
