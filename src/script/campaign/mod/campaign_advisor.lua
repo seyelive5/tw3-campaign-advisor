@@ -510,13 +510,13 @@ local function show_panel(prose)
 				pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA 정확 9-slice
 				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
 				pcall(function() bg:Resize(COL + PAD * 2, math.floor(th + PAD * 2)) end)
-				pcall(function() bg:SetOpacity(255) end)
+				pcall(function() bg:SetOpacity(235) end)
 				pcall(function() bg:MoveTo(X, Y) end)
-				bg:RegisterTopMost()
 			end
 			pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)
-			textc:RegisterTopMost()
-			proof(string.format("v16 패널 표시 col=%d th(TextDim)=%d", COL, th), true)
+			-- z-순서: 패널 전체를 topmost(내부는 frame_black<text_child 순 → 텍스트가 배경 위). 개별 topmost 안 함.
+			pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
+			proof(string.format("v17 패널 표시(z순서 수정) col=%d th=%d", COL, th), true)
 		end
 	end)
 end
