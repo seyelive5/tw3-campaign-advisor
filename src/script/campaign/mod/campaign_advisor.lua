@@ -498,21 +498,24 @@ local function show_panel(prose)
 		if bg then pcall(function() bg:SetVisible(g_panel_shown) end) end
 		textc:SetVisible(g_panel_shown)
 		if g_panel_shown then
-			-- 배경을 텍스트 크기에 맞춰 확장(기본 배너는 74px 단행) 후 텍스트를 그 위로.
+			-- 가독성: 좁은 컬럼 + 좌측정렬 → 줄바꿈. 좌상단 배치. 배경 불투명↑.
+			local COL = 460
+			pcall(function() textc:SetTextHAlign("left") end)
+			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 700) end)  -- 좁게 강제 → 자동 줄바꿈
+			local th = 240
+			pcall(function() local w, h = textc:Dimensions(); if h and h > 20 then th = h end end)
 			if bg then
 				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
-				local tw, th = 1280, 130
-				pcall(function() local w, h = textc:Dimensions(); if w and w > 0 then tw = w; th = h end end)
-				pcall(function() bg:Resize(math.floor(tw + 90), math.floor(th + 36)) end)
+				pcall(function() bg:Resize(COL + 44, th + 28) end)
+				pcall(function() bg:SetOpacity(235) end)   -- 더 불투명(지도 비침 감소→대비↑)
 				bg:RegisterTopMost()
 			end
-			textc:RegisterTopMost()   -- 텍스트를 배경 위에
+			textc:RegisterTopMost()   -- 텍스트를 배경 위로
 			pcall(function()
 				local panel = find_uicomponent(root, PANEL_ID)
-				if panel then local rw, rh = root:Dimensions(); panel:MoveTo(math.floor(rw * 0.27), 120) end
+				if panel then pcall(function() panel:Resize(COL + 44, th + 28) end); panel:MoveTo(24, 150) end
 			end)
-			local x, y = textc:Position(); local w, h = textc:Dimensions()
-			proof(string.format("v12 패널 표시(배경 ON) pos=(%d,%d) size=(%dx%d)", x, y, w, h), true)
+			proof(string.format("v13 패널(좁은컬럼 %dpx, 좌상단) 표시 th=%d", COL, th), true)
 		end
 	end)
 end
