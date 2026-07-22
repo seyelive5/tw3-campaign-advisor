@@ -517,6 +517,35 @@ local function show_panel(prose)
 	end)
 end
 
+-- ── 라이브 UI 텍스트 컴포넌트 스캐너 (개발용, 1회) — 복제 대상 발굴 ──
+local g_scanned = false
+local function scan_text(comp, path, depth, found, cap)
+	if #found >= cap or depth > 7 then return end
+	local n = 0
+	pcall(function() n = comp:ChildCount() end)
+	for i = 0, n - 1 do
+		if #found >= cap then return end
+		local ok, child = pcall(function() return UIComponent(comp:Find(i)) end)
+		if ok and child then
+			local id = "?"; pcall(function() id = child:Id() end)
+			local txt = ""; pcall(function() txt = child:GetStateText() end)
+			if txt and txt ~= "" then
+				found[#found + 1] = path .. "/" .. tostring(id) .. " = [" .. string.sub(tostring(txt), 1, 30) .. "]"
+			end
+			scan_text(child, path .. "/" .. tostring(id), depth + 1, found, cap)
+		end
+	end
+end
+local function dump_text_scan()
+	pcall(function()
+		local found = {}
+		scan_text(core:get_ui_root(), "root", 0, found, 45)
+		proof("──── UI 텍스트 컴포넌트 스캔 (CopyComponent 후보) ────", true)
+		for _, s in ipairs(found) do proof("  " .. s, true) end
+		proof(string.format("──── 스캔 끝 (%d개) ────", #found), true)
+	end)
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
@@ -535,6 +564,7 @@ local function run_advisor()
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
 		show_panel(prose)                                  -- 화면: 팝업 패널(버튼=표시/갱신, 패널 클릭=닫기)
+		if not g_scanned then g_scanned = true; dump_text_scan() end   -- 1회: 라이브 UI 텍스트 컴포넌트 스캔
 		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
 	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
