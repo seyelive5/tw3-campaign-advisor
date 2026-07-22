@@ -393,7 +393,7 @@ local function build_prose(S, D, cand, prof)
 		local lord = prof.lords[S.leader_key]
 		P[#P+1] = string.format("%s: %s.", tostring(lord.name or "군주"), tostring(lord.note or ""))
 	end
-	return table.concat(P, " ")
+	return table.concat(P, "\n")   -- 문장별 줄바꿈(툴팁 표시 안정)
 end
 
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
