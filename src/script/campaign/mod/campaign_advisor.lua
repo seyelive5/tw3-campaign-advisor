@@ -60,6 +60,17 @@ local function fname(key)
 	return FACTION_NAME[key] or key
 end
 
+-- 진영 전략 프로필 조회 (subculture→culture→기본). 전역표는 za_faction_profiles.lua 에서 설정.
+local function get_profile(S)
+	local P
+	pcall(function()
+		if CA_FACTION_PROFILES then P = CA_FACTION_PROFILES[S.subculture] or CA_FACTION_PROFILES[S.culture] end
+	end)
+	if not P then pcall(function() P = CA_FACTION_DEFAULT end) end
+	if not P then P = { race = "(일반)", identity = "", pr = {}, tips = {} } end
+	return P
+end
+
 -- 팩션 리스트 → 키 집합(set) {key=true}
 local function key_set(list_getter, cap)
 	local set, cnt = {}, 0
@@ -108,6 +119,8 @@ local function gather_state()
 	local function LN(fn) local ok, l = pcall(fn); if ok and l then return l:num_items() end return nil end
 	local S = {}
 	S.faction      = V(function() return f:name() end)
+	S.subculture   = V(function() return f:subculture() end)
+	S.culture      = V(function() return f:culture() end)
 	S.turn         = V(function() return cm:turn_number() end)
 	S.treasury     = V(function() return f:treasury() end)
 	S.income       = V(function() return f:income() end)
@@ -137,7 +150,7 @@ local function gather_state()
 end
 
 -- ── 파생지표 + 2축 스코어링 ──────────────────────────────────────────
-local function analyze(S)
+local function analyze(S, prof)
 	local regions  = num(S.regions, 0)
 	local field    = num(S.generals, 0)
 	local net      = num(S.net, 0)
@@ -199,6 +212,11 @@ local function analyze(S)
 			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", wars) } }
 	end
 
+	-- 진영 프로필로 6차원 재가중 (상황 base 점수 × 진영 성향 가중치)
+	for i = 1, #cand do
+		local w = (prof and prof.pr and prof.pr[cand[i].key]) or 0.6
+		cand[i].score = clamp(math.floor(cand[i].score * w + 0.5), 0, 100)
+	end
 	table.sort(cand, function(a, b) return a.score > b.score end)
 	return D, cand
 end
@@ -219,7 +237,7 @@ end
 -- ── 브리핑 조립(다양한 오프너 + 랭킹 조언) ──────────────────────────
 local OPENERS = { "전략 브리핑", "현황 분석", "참모 보고", "정세 판단" }
 
-local function build_briefing(S, D, cand)
+local function build_briefing(S, D, cand, prof)
 	g_click = g_click + 1
 	local opener = OPENERS[(g_click - 1) % #OPENERS + 1]
 	local buffer_str = (D.buffer >= 999) and "충분" or string.format("%.1f턴", D.buffer)
@@ -235,6 +253,12 @@ local function build_briefing(S, D, cand)
 	L[#L+1] = string.format("파생: 군대밀도 %.2f · 재정버퍼 %s · 국경적 %d(%s) · 원거리전 %d · 비적대이웃 %d",
 		D.density, buffer_str, D.immediate, wars, D.distant, D.others)
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
+	if prof and prof.race and prof.race ~= "(일반)" then
+		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
+	end
+	if prof and prof.tips and #prof.tips > 0 then
+		L[#L+1] = "💡 진영 팁: " .. prof.tips[(g_click - 1) % #prof.tips + 1]
+	end
 	L[#L+1] = "── 권장 행동 (점수 순) ──"
 	local shown = math.min(#cand, 3)
 	for i = 1, shown do
@@ -248,7 +272,7 @@ local function build_briefing(S, D, cand)
 end
 
 -- 화면(툴팁)용 간략 브리핑 — g_click 증가시키지 않음(build_briefing과 별개).
-local function build_tooltip(S, D, cand)
+local function build_tooltip(S, D, cand, prof)
 	local L = {}
 	L[#L+1] = string.format("[전략 브리핑] %s · %s턴", fname(S.faction), tostring(num(S.turn, "?")))
 	L[#L+1] = string.format("재정 %s (순 %s) · 영토 %s · 필드군 %s",
@@ -256,6 +280,9 @@ local function build_tooltip(S, D, cand)
 		((num(S.net, 0) >= 0) and ("+" .. num(S.net, 0)) or tostring(S.net)),
 		tostring(num(S.regions, "?")), tostring(num(S.generals, "?")))
 	L[#L+1] = "종합: " .. overall(S, D)
+	if prof and prof.tips and #prof.tips > 0 then
+		L[#L+1] = "💡 " .. prof.tips[(g_click - 1) % #prof.tips + 1]
+	end
 	for i = 1, math.min(#cand, 3) do
 		local c = cand[i]
 		local r0 = (#c.reasons > 0) and c.reasons[1] or "(기본)"
@@ -268,16 +295,16 @@ end
 local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
-		local D, cand = analyze(S)
-		proof(build_briefing(S, D, cand), true)           -- 파일: 전체 브리핑
-		local tip = build_tooltip(S, D, cand)             -- 화면: 간략 브리핑
+		local prof = get_profile(S)                        -- 진영 전략 프로필
+		local D, cand = analyze(S, prof)
+		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 전체 브리핑
+		local tip = build_tooltip(S, D, cand, prof)        -- 화면: 간략 브리핑
 		pcall(function()
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
-		proof("2a 화면표시: 버튼 툴팁 갱신 시도(한글 렌더 확인용).", true)
 	end)
-	if not ok then proof("2a run_advisor 예외: " .. tostring(err), true) end
+	if not ok then proof("v9a run_advisor 예외: " .. tostring(err), true) end
 end
 
 -- ── 버튼 + 리스너 (Step3/4 유지) ─────────────────────────────────────
