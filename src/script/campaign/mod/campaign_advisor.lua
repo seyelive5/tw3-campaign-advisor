@@ -14,6 +14,7 @@
 =============================================================================]]
 
 local PROOF_PATH      = "C:/Users/veria/tw3_advisor_proof.txt"
+local HISTORY_PATH    = "C:/Users/veria/tw3_advisor_history.txt"   -- 턴별 스냅샷(추세 계산)
 local BUTTON_ID       = "advisor_recommend_button"
 local BUTTON_TEMPLATE = "ui/templates/round_medium_button"
 
@@ -36,6 +37,8 @@ local function proof(msg, append)
 end
 
 proof("STEP5(2a) 파일 로드됨 (NewSession/top-level).", false)
+-- 세션(캠페인)마다 추세 히스토리 초기화 → 캠페인 간 오염 방지.
+pcall(function() if io and io.open then local h = io.open(HISTORY_PATH, "w"); if h then h:close() end end end)
 
 local g_done  = false
 local g_click = 0
@@ -288,6 +291,10 @@ local function build_briefing(S, D, cand, prof)
 		tostring(num(S.regions,"?")), tostring(num(S.generals,"?")), tostring(num(S.armies,"?")))
 	L[#L+1] = string.format("파생: 군대밀도 %.2f · 재정버퍼 %s · 국경적 %d(%s) · 원거리전 %d · 비적대이웃 %d",
 		D.density, buffer_str, D.immediate, wars, D.distant, D.others)
+	if S.trend then
+		L[#L+1] = string.format("📈 추세(%d턴 전 대비): 재정 %+d · 영토 %+d · 수입 %+d",
+			S.trend.dt, S.trend.treasury, S.trend.regions, S.trend.income)
+	end
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
@@ -373,6 +380,15 @@ local function build_prose(S, D, cand, prof)
 	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
 	else threat = "국경은 평온합니다" end
 	P[#P+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), eco, threat)
+	-- 추세 한마디
+	if S.trend then
+		local tp = {}
+		if S.trend.regions > 0 then tp[#tp+1] = "영토가 늘고" elseif S.trend.regions < 0 then tp[#tp+1] = "영토가 줄고" end
+		if S.trend.income > 0 then tp[#tp+1] = "수입이 오르는 추세입니다"
+		elseif S.trend.income < 0 then tp[#tp+1] = "수입이 꺾이는 추세입니다"
+		else tp[#tp+1] = "수입은 정체 상태입니다" end
+		if #tp > 0 then P[#P+1] = string.format("최근 %d턴 사이 %s.", S.trend.dt, table.concat(tp, ", ")) end
+	end
 	-- 최우선 조언
 	if cand[1] then
 		P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
@@ -395,11 +411,70 @@ local function build_prose(S, D, cand, prof)
 	return table.concat(P, "\n")   -- 문장별 줄바꿈(툴팁 표시 안정)
 end
 
+-- ── 턴별 추세 (io 스냅샷 비교) ───────────────────────────────────────
+-- 각 줄: faction|turn|treasury|regions|armies|income
+local function read_history()
+	local list = {}
+	pcall(function()
+		if not (io and io.open) then return end
+		local fh = io.open(HISTORY_PATH, "r")
+		if not fh then return end
+		for line in fh:lines() do
+			local fac, t, tr, rg, ar, inc = line:match("([^|]*)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)")
+			if fac then
+				list[#list + 1] = { faction = fac, turn = tonumber(t), treasury = tonumber(tr),
+					regions = tonumber(rg), armies = tonumber(ar), income = tonumber(inc) }
+			end
+		end
+		fh:close()
+	end)
+	return list
+end
+
+-- 같은 팩션, 현재보다 이전 턴 중 최신 스냅샷과 비교 → 델타. 없으면 nil.
+local function compute_trend(S, hist)
+	local cur = num(S.turn, 0)
+	local prev = nil
+	for _, h in ipairs(hist) do
+		if h.faction == S.faction and h.turn and h.turn < cur then
+			if (not prev) or (h.turn > prev.turn) then prev = h end
+		end
+	end
+	if not prev then return nil end
+	return { dt = cur - prev.turn,
+		treasury = num(S.treasury, 0) - (prev.treasury or 0),
+		regions  = num(S.regions, 0)  - (prev.regions or 0),
+		income   = num(S.income, 0)   - (prev.income or 0) }
+end
+
+-- 현재 턴 스냅샷 기록(같은 팩션·턴 갱신, 최근 12줄 유지).
+local function record_snapshot(S, hist)
+	pcall(function()
+		if not (io and io.open) or not S.faction then return end
+		local kept = {}
+		for _, h in ipairs(hist) do
+			if not (h.faction == S.faction and h.turn == num(S.turn, 0)) then kept[#kept + 1] = h end
+		end
+		kept[#kept + 1] = { faction = S.faction, turn = num(S.turn, 0), treasury = num(S.treasury, 0),
+			regions = num(S.regions, 0), armies = num(S.generals, 0), income = num(S.income, 0) }
+		while #kept > 12 do table.remove(kept, 1) end
+		local fh = io.open(HISTORY_PATH, "w")
+		if not fh then return end
+		for _, h in ipairs(kept) do
+			fh:write(string.format("%s|%d|%d|%d|%d|%d\n", tostring(h.faction), h.turn or 0,
+				h.treasury or 0, h.regions or 0, h.armies or 0, h.income or 0))
+		end
+		fh:close()
+	end)
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
+		local hist = read_history()                        -- 턴별 추세
+		S.trend = compute_trend(S, hist)
 		local D, cand = analyze(S, prof)
 		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 구조화 블록
 		local prose = build_prose(S, D, cand, prof)        -- 자연어 산문
@@ -410,8 +485,9 @@ local function run_advisor()
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
+		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
-	if not ok then proof("v9c run_advisor 예외: " .. tostring(err), true) end
+	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
 end
 
 -- ── 버튼 + 리스너 (Step3/4 유지) ─────────────────────────────────────
