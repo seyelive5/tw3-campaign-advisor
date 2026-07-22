@@ -498,25 +498,25 @@ local function show_panel(prose)
 		if bg then pcall(function() bg:SetVisible(g_panel_shown) end) end
 		textc:SetVisible(g_panel_shown)
 		if g_panel_shown then
-			-- 가독성: 좁은 컬럼 좌측정렬 줄바꿈. 배경·텍스트를 도킹 대신 절대좌표로 정렬.
 			local COL, X, Y, PAD = 460, 24, 150, 18
 			pcall(function() textc:SetTextHAlign("left") end)
-			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 700) end)  -- 좁게 강제 → 줄바꿈
-			local tw, th = COL, 240
-			pcall(function() local w, h = textc:Dimensions(); if h and h > 20 then th = h; if w and w > 0 then tw = w end end end)
+			pcall(function() textc:SetOpacity(255) end)
+			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 900) end)  -- 폭 강제→줄바꿈(높이 넉넉)
+			local th = 260
+			pcall(function() local w, h = textc:TextDimensions(); if h and h > 20 and h < 900 then th = h + 8 end end)  -- ★실제 텍스트 높이
+			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, th) end)   -- 실제 높이로 축소(빈 공간 제거)
 			if bg then
-				-- 배경 이미지를 자막 배너 → 깔끔한 툴팁 프레임으로 교체 + CA 정확 9-slice 마진.
-				pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)
-				pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA값(top,right,bottom,left)
+				pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)  -- 자막배너→툴팁프레임
+				pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA 정확 9-slice
 				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
-				pcall(function() bg:Resize(math.floor(tw + PAD * 2), math.floor(th + PAD * 2)) end)
+				pcall(function() bg:Resize(COL + PAD * 2, math.floor(th + PAD * 2)) end)
 				pcall(function() bg:SetOpacity(255) end)
-				pcall(function() bg:MoveTo(X, Y) end)              -- ★배경을 명시 좌표로(도킹 무시)
+				pcall(function() bg:MoveTo(X, Y) end)
 				bg:RegisterTopMost()
 			end
-			pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)   -- ★텍스트를 배경 안쪽으로
-			textc:RegisterTopMost()                                -- 텍스트를 배경 위로
-			proof(string.format("v14 패널(명시좌표) 표시 col=%d th=%d", COL, th), true)
+			pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)
+			textc:RegisterTopMost()
+			proof(string.format("v16 패널 표시 col=%d th(TextDim)=%d", COL, th), true)
 		end
 	end)
 end
