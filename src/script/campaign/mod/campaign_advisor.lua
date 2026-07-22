@@ -485,24 +485,34 @@ local function get_panel()
 	end)
 	return panel
 end
--- 버튼 클릭마다 토글(표시/숨김) + 텍스트 갱신. 텍스트는 text_child에.
+-- 버튼 클릭마다 토글(표시/숨김) + 텍스트 갱신. 텍스트=text_child, 배경=frame_black(레이아웃에 있으나 visible=false).
 local function show_panel(prose)
 	pcall(function()
 		if not get_panel() then return end
 		local root = core:get_ui_root()
 		local textc = find_uicomponent(root, PANEL_ID, "text_child")
-		if not textc then proof("v11 !!! text_child 못찾음", true); return end
+		if not textc then proof("v12 !!! text_child 못찾음", true); return end
 		pcall(function() textc:SetStateText(prose, "") end)
 		g_panel_shown = not g_panel_shown
+		local bg = find_uicomponent(root, PANEL_ID, "frame_black")   -- 숨겨진 검은 배너 배경
+		if bg then pcall(function() bg:SetVisible(g_panel_shown) end) end
 		textc:SetVisible(g_panel_shown)
 		if g_panel_shown then
-			textc:RegisterTopMost()
+			-- 배경을 텍스트 크기에 맞춰 확장(기본 배너는 74px 단행) 후 텍스트를 그 위로.
+			if bg then
+				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
+				local tw, th = 1280, 130
+				pcall(function() local w, h = textc:Dimensions(); if w and w > 0 then tw = w; th = h end end)
+				pcall(function() bg:Resize(math.floor(tw + 90), math.floor(th + 36)) end)
+				bg:RegisterTopMost()
+			end
+			textc:RegisterTopMost()   -- 텍스트를 배경 위에
 			pcall(function()
 				local panel = find_uicomponent(root, PANEL_ID)
 				if panel then local rw, rh = root:Dimensions(); panel:MoveTo(math.floor(rw * 0.27), 120) end
 			end)
 			local x, y = textc:Position(); local w, h = textc:Dimensions()
-			proof(string.format("v11 패널 표시 pos=(%d,%d) size=(%dx%d)", x, y, w, h), true)
+			proof(string.format("v12 패널 표시(배경 ON) pos=(%d,%d) size=(%dx%d)", x, y, w, h), true)
 		end
 	end)
 end
