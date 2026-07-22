@@ -519,33 +519,32 @@ end
 
 -- ── 라이브 UI 텍스트 컴포넌트 스캐너 (개발용, 1회) — 복제 대상 발굴 ──
 local g_scanned = false
-local function scan_text(comp, path, depth, found, cap)
-	if #found >= cap or depth > 7 then return end
+-- 전체 UI 트리를 들여쓰기로 덤프. ★TXT=텍스트 표시 컴포넌트(복제 후보).
+local function scan_all(comp, depth, out, cap)
+	if #out >= cap or depth > 9 then return end
 	local n = 0
 	pcall(function() n = comp:ChildCount() end)
 	for i = 0, n - 1 do
-		if #found >= cap then return end
+		if #out >= cap then return end
 		local ok, child = pcall(function() return UIComponent(comp:Find(i)) end)
 		if ok and child then
 			local id = "?"; pcall(function() id = child:Id() end)
-			-- 맵 위 정착지 라벨 브랜치는 건너뜀(HUD 텍스트를 찾기 위해)
-			if id ~= "3d_ui_parent" and id ~= "settlement_labels" then
+			if id ~= "3d_ui_parent" and id ~= "settlement_labels" then   -- 맵 라벨 스팸 제외
 				local txt = ""; pcall(function() txt = child:GetStateText() end)
-				if txt and txt ~= "" then
-					found[#found + 1] = path .. "/" .. tostring(id) .. " = [" .. string.sub(tostring(txt), 1, 30) .. "]"
-				end
-				scan_text(child, path .. "/" .. tostring(id), depth + 1, found, cap)
+				local mark = (txt and txt ~= "") and (" ★TXT=[" .. string.sub(tostring(txt), 1, 22) .. "]") or ""
+				out[#out + 1] = string.rep(". ", depth) .. tostring(id) .. mark
+				scan_all(child, depth + 1, out, cap)
 			end
 		end
 	end
 end
 local function dump_text_scan()
 	pcall(function()
-		local found = {}
-		scan_text(core:get_ui_root(), "root", 0, found, 60)
-		proof("──── UI 텍스트 컴포넌트 스캔 (CopyComponent 후보) ────", true)
-		for _, s in ipairs(found) do proof("  " .. s, true) end
-		proof(string.format("──── 스캔 끝 (%d개) ────", #found), true)
+		local out = {}
+		scan_all(core:get_ui_root(), 0, out, 900)
+		proof("════ 전체 UI 트리 덤프 (★TXT=텍스트 컴포넌트) ════", true)
+		for _, s in ipairs(out) do proof(s, true) end
+		proof(string.format("════ 덤프 끝 (%d개) ════", #out), true)
 	end)
 end
 
