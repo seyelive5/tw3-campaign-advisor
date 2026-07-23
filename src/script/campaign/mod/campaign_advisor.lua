@@ -247,9 +247,18 @@ local function analyze(S, prof)
 			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", wars) } }
 	end
 
-	-- 진영 시그니처 액션(프로필 정의) — 해당 차원으로 재가중됨
+	-- 진영 시그니처 액션(프로필 정의). 같은 차원 후보가 이미 있으면 흡수(라벨 승격+근거 추가+가중),
+	-- 없으면 새 후보로 추가 → 같은 축이 top-3를 중복 점유하는 문제 방지(③).
 	if prof and prof.sig and prof.sig.dim then
-		cand[#cand+1] = { key = prof.sig.dim, label = prof.sig.label or "진영", score = 52, reasons = { prof.sig.note or "" } }
+		local existing
+		for i = 1, #cand do if cand[i].key == prof.sig.dim then existing = cand[i]; break end end
+		if existing then
+			existing.label = prof.sig.label or existing.label
+			if prof.sig.note and prof.sig.note ~= "" then existing.reasons[#existing.reasons + 1] = prof.sig.note end
+			existing.score = existing.score + 6   -- 시그니처 강조 보너스(재가중 전 base 스케일)
+		else
+			cand[#cand + 1] = { key = prof.sig.dim, label = prof.sig.label or "진영", score = 52, reasons = { prof.sig.note or "" } }
+		end
 	end
 	-- 진영 프로필로 6차원 재가중 (상황 base 점수 × 진영 성향 가중치)
 	for i = 1, #cand do
@@ -323,25 +332,7 @@ local function build_briefing(S, D, cand, prof)
 	return table.concat(L, "\n")
 end
 
--- 화면(툴팁)용 간략 브리핑 — g_click 증가시키지 않음(build_briefing과 별개).
-local function build_tooltip(S, D, cand, prof)
-	local L = {}
-	L[#L+1] = string.format("[전략 브리핑] %s · %s턴", fname(S.faction), tostring(num(S.turn, "?")))
-	L[#L+1] = string.format("재정 %s (순 %s) · 영토 %s · 필드군 %s",
-		tostring(num(S.treasury, "?")),
-		((num(S.net, 0) >= 0) and ("+" .. num(S.net, 0)) or tostring(S.net)),
-		tostring(num(S.regions, "?")), tostring(num(S.generals, "?")))
-	L[#L+1] = "종합: " .. overall(S, D)
-	if prof and prof.tips and #prof.tips > 0 then
-		L[#L+1] = "💡 " .. prof.tips[(g_click - 1) % #prof.tips + 1]
-	end
-	for i = 1, math.min(#cand, 3) do
-		local c = cand[i]
-		local r0 = (#c.reasons > 0) and c.reasons[1] or "(기본)"
-		L[#L+1] = string.format("%d. [%s·%s %d] %s", i, c.label, sev(c.score), c.score, r0)
-	end
-	return table.concat(L, "\n")
-end
+-- (build_tooltip 제거 — 현재 툴팁은 build_prose 산문을 사용. 데드코드 정리.)
 
 -- ── 자연어 산문 생성 (v9c) — 문구 풀 회전으로 다양화 ──
 local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면", "보고드리자면", "냉정히 보면", "지금 국면은" }
@@ -389,13 +380,23 @@ local function build_prose(S, D, cand, prof)
 		else tp[#tp+1] = "수입은 정체 상태입니다" end
 		if #tp > 0 then P[#P+1] = string.format("최근 %d턴 사이 %s.", S.trend.dt, table.concat(tp, ", ")) end
 	end
-	-- 최우선 조언
+	-- 최우선 조언 (근거 없으면 대시 생략)
 	if cand[1] then
-		P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), tostring(cand[1].reasons[1] or ""))
+		local r1 = cand[1].reasons[1]
+		if r1 and r1 ~= "" then
+			P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), tostring(r1))
+		else
+			P[#P+1] = string.format("무엇보다 %s%s %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score))
+		end
 	end
-	-- 차선 조언
+	-- 차선 조언 (근거 없으면 괄호 생략)
 	if cand[2] then
-		P[#P+1] = string.format("%s %s도 챙기세요(%s).", rot(PROSE_CONN), cand[2].label, tostring(cand[2].reasons[1] or ""))
+		local r2 = cand[2].reasons[1]
+		if r2 and r2 ~= "" then
+			P[#P+1] = string.format("%s %s도 챙기세요(%s).", rot(PROSE_CONN), cand[2].label, tostring(r2))
+		else
+			P[#P+1] = string.format("%s %s도 챙기세요.", rot(PROSE_CONN), cand[2].label)
+		end
 	end
 	-- 진영 특색 (팁 우선; 시그니처는 이미 후보로 등장할 수 있어 중복 회피. 오프셋으로 다른 팁 선택)
 	if prof and prof.tips and #prof.tips > 0 then
@@ -473,6 +474,7 @@ end
 --   "UI/Common UI/scripted_subtitles.twui.xml" → find "text_child" 자식에 SetStateText.
 local PANEL_ID = "advisor_panel"
 local g_panel_shown = false
+local g_panel_turn  = -1   -- 마지막으로 패널을 띄운 턴(①: 턴 인식 토글 — 같은 턴 재클릭만 숨김)
 local function get_panel()
 	local panel = nil
 	pcall(function()
@@ -485,39 +487,62 @@ local function get_panel()
 	end)
 	return panel
 end
--- 버튼 클릭마다 토글(표시/숨김) + 텍스트 갱신. 텍스트=text_child, 배경=frame_black(레이아웃에 있으나 visible=false).
-local function show_panel(prose)
+-- 클릭 시: 이미 떠 있고 '같은 턴'이면 숨김(재클릭=닫기), 그 외엔 항상 표시+갱신(①).
+-- → 다음 턴에 새 브리핑을 보려고 클릭하면 숨김이 아니라 갱신됨(기존 토글의 UX 버그 해소).
+-- 텍스트=text_child, 배경=frame_black(레이아웃에 있으나 visible=false).
+local function show_panel(prose, turn)
 	pcall(function()
 		if not get_panel() then return end
 		local root = core:get_ui_root()
 		local textc = find_uicomponent(root, PANEL_ID, "text_child")
-		if not textc then proof("v12 !!! text_child 못찾음", true); return end
-		pcall(function() textc:SetStateText(prose, "") end)
-		g_panel_shown = not g_panel_shown
+		if not textc then proof("v18 !!! text_child 못찾음", true); return end
 		local bg = find_uicomponent(root, PANEL_ID, "frame_black")   -- 숨겨진 검은 배너 배경
-		if bg then pcall(function() bg:SetVisible(g_panel_shown) end) end
-		textc:SetVisible(g_panel_shown)
-		if g_panel_shown then
-			local COL, X, Y, PAD = 460, 24, 150, 18
-			pcall(function() textc:SetTextHAlign("left") end)
-			pcall(function() textc:SetOpacity(255) end)
-			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 900) end)  -- 폭 강제→줄바꿈(높이 넉넉)
-			local th = 260
-			pcall(function() local w, h = textc:TextDimensions(); if h and h > 20 and h < 900 then th = h + 8 end end)  -- ★실제 텍스트 높이
-			pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, th) end)   -- 실제 높이로 축소(빈 공간 제거)
-			if bg then
-				pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)  -- 자막배너→툴팁프레임
-				pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA 정확 9-slice
-				pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
-				pcall(function() bg:Resize(COL + PAD * 2, math.floor(th + PAD * 2)) end)
-				pcall(function() bg:SetOpacity(235) end)
-				pcall(function() bg:MoveTo(X, Y) end)
-			end
-			pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)
-			-- z-순서: 패널 전체를 topmost(내부는 frame_black<text_child 순 → 텍스트가 배경 위). 개별 topmost 안 함.
-			pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
-			proof(string.format("v17 패널 표시(z순서 수정) col=%d th=%d", COL, th), true)
+
+		-- ① 턴 인식 토글: 같은 턴에 다시 누르면 닫기.
+		if g_panel_shown and turn == g_panel_turn then
+			g_panel_shown = false
+			if bg then pcall(function() bg:SetVisible(false) end) end
+			pcall(function() textc:SetVisible(false) end)
+			proof("v18 패널 숨김(같은 턴 재클릭)", true)
+			return
 		end
+
+		-- 표시 + 갱신
+		pcall(function() textc:SetStateText(prose, "") end)   -- 텍스트 먼저 세팅 후 측정(순서 중요)
+		g_panel_shown, g_panel_turn = true, turn
+		if bg then pcall(function() bg:SetVisible(true) end) end
+		pcall(function() textc:SetVisible(true) end)
+
+		local COL, X, Y, PAD = 460, 24, 150, 18
+		pcall(function() textc:SetTextHAlign("left") end)
+		pcall(function() textc:SetOpacity(255) end)
+		-- ② 클리핑 해결 — CA 정식 패턴(lib_text_pointers.lua): 폭 강제 래핑 후 TextDimensions(높이)에
+		--    TextYOffset(폰트 상/하 오프셋)을 더해 정확 높이 산출. (기존 h+8 하드코딩이 오프셋보다
+		--    작아 마지막 줄이 잘리던 원인.)
+		pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 2000) end)  -- 측정용 넉넉한 높이(측정 자체가 안 잘리게)
+		local box_h = 600   -- 측정 실패 시 폴백(넉넉히 — 잘리는 것보다 큰 게 나음)
+		pcall(function()
+			local _, th = textc:TextDimensions()
+			if th and th > 20 then
+				local oyt, oyb = 0, 0
+				pcall(function() oyt, oyb = textc:TextYOffset() end)   -- 폰트 상/하 여백(CA와 동일)
+				box_h = th + (oyt or 0) + (oyb or 0)
+			end
+		end)
+		box_h = clamp(box_h, 60, 860)   -- 화면 밖으로 넘치지 않게 상한(Y=150 기준)
+		pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, box_h) end)  -- 정확 높이로 확정(클리핑·데드스페이스 제거)
+		if bg then
+			pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)  -- 자막배너→툴팁프레임
+			pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA 정확 9-slice
+			pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
+			pcall(function() bg:Resize(COL + PAD * 2, math.floor(box_h + PAD * 2)) end)
+			pcall(function() bg:SetOpacity(235) end)
+			pcall(function() bg:MoveTo(X, Y) end)
+		end
+		pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)
+		-- z-순서: 패널 전체를 topmost(내부는 frame_black<text_child 순 → 텍스트가 배경 위).
+		pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
+		proof(string.format("v18 패널 표시 col=%d h=%d turn=%s", COL, box_h, tostring(turn)), true)
 	end)
 end
 
@@ -538,7 +563,7 @@ local function run_advisor()
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
-		show_panel(prose)                                  -- 화면: 팝업 패널(버튼 클릭 = 토글 표시/갱신)
+		show_panel(prose, num(S.turn, 0))                  -- 화면: 팝업 패널(①턴 인식 토글, ②정확 높이)
 		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
 	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
