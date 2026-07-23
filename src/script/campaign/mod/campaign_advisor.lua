@@ -865,14 +865,24 @@ local function build_prose(S, D, cand, prof)
 	-- 외교 기회(모듈4) — 성사 가능한 화친/동맹. 계획의 '제거 표적'과 모순되지 않게 분리(일관성).
 	if S.diplo then
 		if #S.diplo.peace > 0 then
-			local elim_key = nil
-			if S.plan then for _, st in ipairs(S.plan.steps or {}) do if st.kind == "elim" then elim_key = st.key; break end end end
+			-- 계획과의 일관성: 제거 표적(모순)·화친 단계 대상(중복)은 이 줄에서 제외
+			local elim_key, sup = nil, {}
+			if S.plan then
+				for _, st in ipairs(S.plan.steps or {}) do
+					if st.kind == "elim" and st.key then if not elim_key then elim_key = st.key end; sup[st.key] = true
+					elseif st.kind == "peace" and st.key then sup[st.key] = true end
+				end
+			end
 			local show = {}
-			for _, k in ipairs(S.diplo.peace) do if k ~= elim_key then show[#show + 1] = k end end
+			for _, k in ipairs(S.diplo.peace) do if not sup[k] then show[#show + 1] = k end end
 			if #show > 0 then
 				P[#P+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", first_names(show, 2))
-			elseif elim_key then
-				P[#P+1] = string.format("외교 — %s와의 화친도 성사 가능하나, 계획상 제거가 우선입니다. 전황이 급하면 화친으로 전선을 줄이는 선택도 유효합니다.", fname(elim_key))
+			elseif elim_key and sup[elim_key] then
+				local dup = false
+				for _, k in ipairs(S.diplo.peace) do if k == elim_key then dup = true end end
+				if dup then
+					P[#P+1] = string.format("외교 — %s와의 화친도 성사 가능하나, 계획상 제거가 우선입니다. 전황이 급하면 화친으로 전선을 줄이는 선택도 유효합니다.", fname(elim_key))
+				end
 			end
 		end
 		if #S.diplo.ally > 0 then
@@ -1173,19 +1183,35 @@ local function plan_deserialize(raw)
 	return plan
 end
 
--- ── 계획 생성(순수) — ①제거 표적 ②속주 완성 ③대비/자세, 최대 3단계 ──
+-- ── 계획 생성(순수) — 상황 판단: 생존 국면=화친 우선, 건재=제거 우선 ──
+-- 단계: ①군사(peace 또는 elim) ②속주 완성 ③대비/자세. 최대 3단계.
 local function plan_generate(S, dglabel)
 	local steps, ST = {}, S.strat or {}
-	-- ① 군사: 국경 전쟁적 중 잔여 영토 최소(가장 빨리 끝낼 전선)
+	-- 생존 국면(궁지/재정위기/과확장): 화친 가능한 적 중 '가장 큰' 상대와 강화 → 최대 위협부터 전선 정리
+	local survival = (dglabel == "궁지" or dglabel == "재정 위기" or dglabel == "과확장")
+	local peace_key = nil
+	if survival then
+		local bestp
+		for _, k in ipairs((S.diplo and S.diplo.peace) or {}) do
+			local e = ST.enemy and ST.enemy[k]
+			local r = (e and e.regions) or -1   -- 크기 미상(원거리)은 후순위지만 자격 있음
+			if not bestp or r > bestp.r then bestp = { key = k, r = r } end
+		end
+		if bestp then
+			peace_key = bestp.key
+			steps[#steps + 1] = { kind = "peace", key = peace_key, base = math.max(bestp.r, 0), last = math.max(bestp.r, 0), created = num(S.turn, 0) }
+		end
+	end
+	-- 군사: 국경 전쟁적 중 잔여 영토 최소(가장 빨리 끝낼 전선). 화친 대상은 제외.
 	local best
 	for i = 1, #(S.border_enemies or {}) do
 		local k = S.border_enemies[i]
 		local e = ST.enemy and ST.enemy[k]
-		if e and e.regions and e.regions > 0 then
+		if k ~= peace_key and e and e.regions and e.regions > 0 then
 			if not best or e.regions < best.regions then best = { key = k, regions = e.regions } end
 		end
 	end
-	if best then
+	if best and #steps < 3 then
 		steps[#steps + 1] = { kind = "elim", key = best.key, base = best.regions, last = best.regions, created = num(S.turn, 0) }
 	end
 	-- ② 내정: 미완 속주 중 남은 칸(gap) 최소 → 완성 임박 우선(CA 자체 넛지와 동일 설계)
@@ -1198,16 +1224,18 @@ local function plan_generate(S, dglabel)
 			end
 		end
 	end
-	if bp then
+	if bp and #steps < 3 then
 		steps[#steps + 1] = { kind = "prov", key = bp.key, base = bp.total, last = bp.owned, created = num(S.turn, 0) }
 	end
-	-- ③ 대비/자세
-	if ST.endgame and ST.endgame.armed then
-		steps[#steps + 1] = { kind = "prep", key = ST.endgame.armed.scenario, base = ST.endgame.armed.turn or 0, last = 0, created = num(S.turn, 0) }
-	elseif dglabel == "과확장" then
-		steps[#steps + 1] = { kind = "posture", key = "consolidate", base = 0, last = 0, created = num(S.turn, 0) }
-	elseif #steps == 0 then
-		steps[#steps + 1] = { kind = "posture", key = (S.weak_target and "expand" or "tech"), base = 0, last = 0, created = num(S.turn, 0) }
+	-- ③ 대비/자세 (상한 3)
+	if #steps < 3 then
+		if ST.endgame and ST.endgame.armed then
+			steps[#steps + 1] = { kind = "prep", key = ST.endgame.armed.scenario, base = ST.endgame.armed.turn or 0, last = 0, created = num(S.turn, 0) }
+		elseif dglabel == "과확장" then
+			steps[#steps + 1] = { kind = "posture", key = "consolidate", base = 0, last = 0, created = num(S.turn, 0) }
+		elseif #steps == 0 then
+			steps[#steps + 1] = { kind = "posture", key = (S.weak_target and "expand" or "tech"), base = 0, last = 0, created = num(S.turn, 0) }
+		end
 	end
 	return { steps = steps }
 end
@@ -1216,7 +1244,7 @@ end
 local function plan_revise(S, dglabel, old)
 	local events, ST = {}, S.strat or {}
 	for _, s in ipairs((old and old.steps) or {}) do
-		if s.kind == "elim" and s.key then
+		if (s.kind == "elim" or s.kind == "peace") and s.key then
 			local e = ST.enemy and ST.enemy[s.key]
 			local ended = (e and e.regions and e.regions <= 0)
 				or (type(S.war_set) == "table" and not S.war_set[s.key])
@@ -1283,8 +1311,16 @@ function plan_prose_lines(S)
 					end
 				end
 			end
+		elseif s.kind == "peace" then
+			local nm = fname(s.key)
+			line = string.format("%s 강화 — %s%s 화친해 전선을 줄이세요(성사 가능). 지금은 생존과 정비가 우선입니다.", NUMS[i], nm, josa(nm, "과", "와"))
 		elseif s.kind == "prov" then
-			line = string.format("%s %s 속주 완성 — %d/%d.", NUMS[i], province_disp(s.key), s.last or 0, s.base or 0)
+			local ptrend = ""
+			if s.prev and s.last then
+				if s.last > s.prev then ptrend = " — 순항"
+				elseif s.last < s.prev then ptrend = " — 후퇴(지역 상실)" end
+			end
+			line = string.format("%s %s 속주 완성 — %d/%d%s.", NUMS[i], province_disp(s.key), s.last or 0, s.base or 0, ptrend)
 			for _, p in ipairs((ST and ST.provinces) or {}) do
 				if p.key == s.key and p.miss_region then
 					line = line .. string.format(" 미보유: %s%s.", region_disp(p.miss_region),

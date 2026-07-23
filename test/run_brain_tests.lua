@@ -400,6 +400,42 @@ do
 		ok(r and r.label == "신도" and r.value == 30, "슬라네쉬: devotees로 자원 해결", r and r.label)
 		cm.get_local_faction = function() return nil end
 	end
+
+	-- 판단 고도화(v31): 생존 국면 → 최대 위협과 화친, 건재 → 제거
+	local Sp = baseS{ turn = 25, immediate = 3, war_count = 3,
+		border_enemies = { "big_e", "small_e" }, war_set = { big_e = true, small_e = true },
+		war_names = { "빅", "스몰", "그외" },
+		threats = { sieges = { "reg_sieged" }, threatened = {}, targets = {}, my_field = {} },
+		diplo = { peace = { "big_e" }, ally = {} },
+		strat = { enemy = { big_e = { regions = 9 }, small_e = { regions = 2 } },
+			provinces = {}, armies = {}, endgame = { active = {} } } }
+	local D_p = select(1, T.analyze(Sp, T.get_profile(Sp)))
+	local dg_p = T.diagnose(Sp, D_p)
+	ok(dg_p and dg_p.label == "궁지", "전제: 궁지 국면", dg_p and dg_p.label)
+	local pp = T.plan_generate(Sp, dg_p.label)
+	ok(pp.steps[1] and pp.steps[1].kind == "peace" and pp.steps[1].key == "big_e",
+		"생존 국면 → 최대 위협과 화친 우선",
+		pp.steps[1] and (pp.steps[1].kind .. ":" .. tostring(pp.steps[1].key)))
+	ok(pp.steps[2] and pp.steps[2].kind == "elim" and pp.steps[2].key == "small_e",
+		"화친 대상 제외한 최약체 제거 병행")
+	Sp.plan = pp
+	ok(has(table.concat(T.plan_prose_lines(Sp), "\n"), "강화 — ") , "산문: 화친 단계 줄")
+	local _, _, _, prose_p = run(Sp)
+	ok(not has(prose_p, "화친이 성사 가능한 상대") and not has(prose_p, "제거가 우선"),
+		"일관성: 화친 단계가 외교 줄 흡수(중복·모순 없음)")
+	local ph = T.plan_generate(Sp, "소모전")
+	ok(ph.steps[1] and ph.steps[1].kind == "elim" and ph.steps[1].key == "small_e",
+		"건재 국면 → 제거 우선(화친 단계 없음)", ph.steps[1] and ph.steps[1].kind)
+	-- 화친 달성 이벤트 + 속주 추세
+	local So = baseS{ war_set = {}, strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local oldp = { steps = { { kind = "peace", key = "gone_e", base = 9, last = 9, created = 3 } } }
+	local _, evp = T.plan_revise(So, "안정", oldp)
+	ok(#evp == 1 and has(evp[1], "전선 종료"), "화친 달성 이벤트", evp[1])
+	local Sr = baseS{ war_set = {},
+		strat = { enemy = {}, provinces = { { key = "prov_t", owned = 3, total = 4 } }, armies = {}, endgame = { active = {} } } }
+	local oldr = { steps = { { kind = "prov", key = "prov_t", base = 4, last = 2, created = 3 } } }
+	Sr.plan = T.plan_revise(Sr, "안정", oldr)
+	ok(has(table.concat(T.plan_prose_lines(Sr), "\n"), "3/4 — 순항"), "속주 추세 순항(2→3)")
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
