@@ -58,9 +58,30 @@ local FACTION_NAME = {
 	wh_main_dwf_dwarfs = "드워프",
 	wh_main_brt_bretonnia = "브레토니아",
 }
+-- 팩션 키 → 표시명. 우선순위: 큐레이션 테이블 → 게임 로컬라이즈(한글, factions_screen_name_) → 키.
+-- 게임 locale가 한국어라 common.get_localised_string이 한글 팩션명을 돌려줌(바닐라 lib_campaign_ui:413 근거). 캐시.
+local g_fname_cache = {}
 local function fname(key)
 	if key == nil then return "(알수없음)" end
-	return FACTION_NAME[key] or key
+	local c = g_fname_cache[key]
+	if c then return c end
+	local disp = FACTION_NAME[key]
+	if not disp then
+		pcall(function()
+			local loc = common.get_localised_string("factions_screen_name_" .. key)
+			if loc and loc ~= "" then disp = loc end
+		end)
+	end
+	disp = disp or key
+	g_fname_cache[key] = disp
+	return disp
+end
+
+-- 팩션 키 리스트 → 앞 n개 표시명 문자열(", " 결합)
+local function first_names(keys, n)
+	local t = {}
+	for i = 1, math.min(#keys, n or 2) do t[#t + 1] = fname(keys[i]) end
+	return table.concat(t, ", ")
 end
 
 -- 진영 전략 프로필 조회 (subculture→culture→기본). 전역표는 za_faction_profiles.lua 에서 설정.
@@ -124,6 +145,171 @@ local function faction_strength(key)
 	return r
 end
 
+-- ── 위협·방어 탐지 (모듈1) — 포위·접근 적군·무방비 정착지 ─────────────
+-- API(바닐라 실측): region:garrison_residence():is_under_siege(),
+--   mf:has_general()/is_armed_citizenry()/general_character()/strength(),
+--   character:has_region()/region():name(). 캠페인 거리함수 없음 → 인접(adjacency)으로 근사.
+
+-- 지역 키 → 표시명. 게임 로컬라이즈(한글, regions_onscreen_) 우선 → 실패 시 키 마지막 세그먼트(영문) 폴백.
+-- 근거: 바닐라 다수가 "regions_onscreen_"..key 를 로컬 키로 사용. 캐시.
+local g_region_cache = {}
+local function region_disp(key)
+	if type(key) ~= "string" then return "(지역?)" end
+	local c = g_region_cache[key]
+	if c then return c end
+	local disp = nil
+	pcall(function()
+		local loc = common.get_localised_string("regions_onscreen_" .. key)
+		if loc and loc ~= "" then disp = loc end
+	end)
+	if not disp then
+		local tail = key:match("([^_]+)$") or key
+		disp = tail:sub(1, 1):upper() .. tail:sub(2)
+	end
+	g_region_cache[key] = disp
+	return disp
+end
+
+-- 야전군이면 그 군대가 선 지역 키, 아니면 nil(수비대·무장시민 제외).
+local function army_region_name(mf)
+	local rn = nil
+	pcall(function()
+		if mf:has_general() and not mf:is_armed_citizenry() then
+			local ch = mf:general_character()
+			if ch and ch:has_region() and not ch:region():is_null_interface() then rn = ch:region():name() end
+		end
+	end)
+	return rn
+end
+
+-- 위협 수집: 내 지역별 포위 여부 + 전쟁 팩션 야전군이 내 땅/인접에 있는가 + 아군 야전군 근접 여부.
+-- 반환 T = { sieges={지역키...}, threatened={ {region, on_land, faction, defended}... }, my_field={지역키=true} }
+local function gather_threats(f, war_set, border_enemies)
+	local T = { sieges = {}, threatened = {}, targets = {}, my_field = {} }
+	pcall(function()
+		local mine, my_adj, adj_to_mine, tgt_seen = {}, {}, {}, {}
+		local regions = f:region_list(); local rn = regions:num_items()
+		local checks = 0
+		for i = 0, rn - 1 do
+			local reg = regions:item_at(i)
+			local nm = reg:name()
+			mine[nm] = true
+			pcall(function()
+				local gr = reg:garrison_residence()
+				if gr and not gr:is_null_interface() and gr:is_under_siege() then T.sieges[#T.sieges + 1] = nm end
+			end)
+			local al = {}
+			pcall(function()
+				local adj = reg:adjacent_region_list(); local an = adj:num_items()
+				for j = 0, an - 1 do
+					if checks > 800 then break end
+					checks = checks + 1
+					local areg = adj:item_at(j)
+					local anm = areg:name()
+					al[#al + 1] = anm
+					if not adj_to_mine[anm] then adj_to_mine[anm] = nm end
+					-- 확장 표적(모듈3): 인접한 '전쟁 중 적' 소유 정착지
+					if not mine[anm] and not tgt_seen[anm] then
+						local ok = nil
+						pcall(function()
+							local of = areg:owning_faction()
+							if of and not of:is_null_interface() then ok = of:name() end
+						end)
+						if ok and war_set[ok] then
+							tgt_seen[anm] = true
+							T.targets[#T.targets + 1] = { region = anm, owner = ok, my_border = nm }
+						end
+					end
+				end
+			end)
+			my_adj[nm] = al
+		end
+		-- 내 야전군 위치(방어 가용성 판단용)
+		pcall(function()
+			local myf = f:military_force_list(); local mn = myf:num_items()
+			for i = 0, math.min(mn, 40) - 1 do
+				local r = army_region_name(myf:item_at(i))
+				if r then T.my_field[r] = true end
+			end
+		end)
+		local function friendly_near(target)
+			if T.my_field[target] then return true end
+			local a = my_adj[target]
+			if a then for _, n in ipairs(a) do if T.my_field[n] then return true end end end
+			return false
+		end
+		-- 적 야전군 → 내 땅/인접 위협 집계(지역별 1건). 국경 접한 적 우선 스캔(비결정적 순서로 놓치지 않게).
+		local agg = {}
+		local scan, seen = {}, {}
+		if border_enemies then for _, k in ipairs(border_enemies) do if war_set[k] and not seen[k] then seen[k] = true; scan[#scan + 1] = k end end end
+		for k in pairs(war_set) do if not seen[k] then seen[k] = true; scan[#scan + 1] = k end end
+		for idx = 1, math.min(#scan, 12) do
+			local ekey = scan[idx]
+			pcall(function()
+				local ef = cm:get_faction(ekey, false)
+				if not ef or ef:is_null_interface() then return end
+				local el = ef:military_force_list(); local en = el:num_items()
+				for i = 0, math.min(en, 25) - 1 do
+					local mf = el:item_at(i)
+					local r = army_region_name(mf)
+					if r then
+						local target = mine[r] and r or adj_to_mine[r]
+						if target then
+							local a = agg[target]
+							if not a then a = { region = target, on_land = false, faction = ekey }; agg[target] = a; T.threatened[#T.threatened + 1] = a end
+							if mine[r] then a.on_land = true end
+						end
+					end
+				end
+			end)
+		end
+		for _, a in ipairs(T.threatened) do a.defended = friendly_near(a.region) end
+		for _, t in ipairs(T.targets) do t.near = friendly_near(t.my_border) end
+	end)
+	return T
+end
+
+-- ── 외교 기회 조회 (모듈4) — 성사 가능한 화친/동맹 ────────────────────
+-- API(바닐라 실측): cm:cai_evaluate_quick_deal_action(faction_obj, other_obj, option) → score, can_issue.
+--   faction:military_allies_with(other)로 이미 동맹은 제외. 옵션은 diplomatic_option_*(peace/military_alliance).
+local function eval_deal(f, other_key, option)
+	local can = false
+	pcall(function()
+		local of = cm:get_faction(other_key, false)
+		if of and not of:is_null_interface() then
+			local _, ci = cm:cai_evaluate_quick_deal_action(f, of, option)
+			if ci then can = true end
+		end
+	end)
+	return can
+end
+
+local function gather_diplomacy(f, war_set, border_enemies, border_others)
+	local D = { peace = {}, ally = {} }
+	pcall(function()
+		-- 화친 가능(전쟁 중): 국경 접한 적 우선, 최대 8
+		local scan, seen = {}, {}
+		if border_enemies then for _, k in ipairs(border_enemies) do if not seen[k] then seen[k] = true; scan[#scan + 1] = k end end end
+		for k in pairs(war_set) do if not seen[k] then seen[k] = true; scan[#scan + 1] = k end end
+		for idx = 1, math.min(#scan, 8) do
+			if eval_deal(f, scan[idx], "diplomatic_option_peace") then D.peace[#D.peace + 1] = scan[idx] end
+		end
+		-- 동맹 가능(비적대 이웃): 이미 동맹 아닌 경우, 최대 8
+		if border_others then
+			for idx = 1, math.min(#border_others, 8) do
+				local ok = border_others[idx]
+				local already = false
+				pcall(function()
+					local of = cm:get_faction(ok, false)
+					if of and not of:is_null_interface() and f:military_allies_with(of) then already = true end
+				end)
+				if not already and eval_deal(f, ok, "diplomatic_option_military_alliance") then D.ally[#D.ally + 1] = ok end
+			end
+		end
+	end)
+	return D
+end
+
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
 local function gather_state()
 	local f = nil
@@ -173,6 +359,10 @@ local function gather_state()
 	-- 표시용 이름(캡)
 	S.war_names = {}
 	for i = 1, math.min(#S.border_enemies, 3) do S.war_names[#S.war_names + 1] = fname(S.border_enemies[i]) end
+	-- 위협·방어(모듈1): 포위·접근 적군·무방비 정착지
+	S.threats = gather_threats(f, war_set, S.border_enemies)
+	-- 외교 기회(모듈4): 성사 가능한 화친/동맹
+	S.diplo = gather_diplomacy(f, war_set, S.border_enemies, S.border_others)
 	return S
 end
 
@@ -215,9 +405,19 @@ local function analyze(S, prof)
 		if immediate >= 2 then sc = sc - immediate * 4; rs[#rs+1] = "다전선 압박으로 건설 우선순위 하락" end
 		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = rs }
 	end
-	-- 방어 (전선 방어) — 국경 접한 적 중심
+	-- 방어 (전선 방어) — 포위/위협 정착지 + 국경 접한 적 중심
 	do
 		local sc, rs = 0, {}
+		local Tt = S.threats or {}
+		local nsiege = Tt.sieges and #Tt.sieges or 0
+		local nthreat, nundef = 0, 0
+		if Tt.threatened then
+			nthreat = #Tt.threatened
+			for _, a in ipairs(Tt.threatened) do if not a.defended then nundef = nundef + 1 end end
+		end
+		if nsiege > 0 then sc = sc + 45 + nsiege * 10; rs[#rs+1] = string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege) end
+		if nundef > 0 then sc = sc + 20 + nundef * 8; rs[#rs+1] = string.format("무방비 위협 %d곳(근처 아군 없음)", nundef) end
+		if nthreat > nundef then sc = sc + 8; rs[#rs+1] = string.format("적 야전군이 %d개 지역 위협", nthreat) end
 		if immediate > 0 then sc = sc + immediate * 15; rs[#rs+1] = string.format("국경 접한 적 %d개", immediate) end
 		if regions > 0 and density < 0.5 then sc = sc + 25; rs[#rs+1] = "군대 밀도 매우 낮음 — 방어 취약" end
 		if S.strong_enemy and num(S.strong_enemy_r, 0) > num(S.my_regions, 0) then
@@ -237,14 +437,29 @@ local function analyze(S, prof)
 		end
 		cand[#cand+1] = { key = "expansion", label = "확장", score = clamp(sc, 0, 100), reasons = { reason } }
 	end
+	-- 확장(모듈3): 내 군대 인근 공격 가능 적 정착지 → 전시에도 공세 기회
+	do
+		local nt = 0
+		if S.threats and S.threats.targets then for _, t in ipairs(S.threats.targets) do if t.near then nt = nt + 1 end end end
+		if nt > 0 then
+			local reason = string.format("내 군대 인근에 공격 가능한 적 정착지 %d곳", nt)
+			local ex
+			for i = 1, #cand do if cand[i].key == "expansion" then ex = cand[i]; break end end
+			if ex then ex.score = clamp(ex.score + 18, 0, 100); ex.reasons[#ex.reasons + 1] = reason
+			else cand[#cand + 1] = { key = "expansion", label = "확장", score = 45, reasons = { reason } } end
+		end
+	end
 	-- 기술 (연구)
 	if S.research_idle == true then
 		cand[#cand+1] = { key = "tech", label = "기술", score = 45, reasons = { "연구가 미가동 상태 — 즉시 착수 권장" } }
 	end
-	-- 외교 (동맹/화친)
-	if wars >= 2 then
-		cand[#cand+1] = { key = "diplomacy", label = "외교", score = clamp(30 + wars * 6, 0, 100),
-			reasons = { string.format("%d개 세력과 동시 전쟁 — 동맹/화친으로 전선 축소 검토", wars) } }
+	-- 외교 (동맹/화친) — 다전선 + 성사 가능한 화친/동맹(모듈4)
+	do
+		local sc, rs = 0, {}
+		if wars >= 2 then sc = sc + 30 + wars * 6; rs[#rs + 1] = string.format("%d개 세력과 동시 전쟁 — 전선 축소 검토", wars) end
+		if S.diplo and #S.diplo.peace > 0 then sc = sc + 22; rs[#rs + 1] = string.format("화친 성사 가능: %s", first_names(S.diplo.peace, 2)) end
+		if S.diplo and #S.diplo.ally > 0 then sc = sc + 12; rs[#rs + 1] = string.format("동맹 성사 가능: %s", first_names(S.diplo.ally, 2)) end
+		if sc > 0 then cand[#cand + 1] = { key = "diplomacy", label = "외교", score = clamp(sc, 0, 100), reasons = rs } end
 	end
 
 	-- 진영 시그니처 액션(프로필 정의). 같은 차원 후보가 이미 있으면 흡수(라벨 승격+근거 추가+가중),
@@ -305,6 +520,28 @@ local function build_briefing(S, D, cand, prof)
 			S.trend.dt, S.trend.treasury, S.trend.regions, S.trend.income)
 	end
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
+	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0) then
+		local parts = {}
+		if #S.threats.sieges > 0 then
+			local ns = {}; for _, k in ipairs(S.threats.sieges) do ns[#ns+1] = region_disp(k) end
+			parts[#parts+1] = "포위=" .. table.concat(ns, ",")
+		end
+		if #S.threats.threatened > 0 then
+			local ts = {}; for _, a in ipairs(S.threats.threatened) do ts[#ts+1] = region_disp(a.region) .. (a.defended and "(방어됨)" or "(무방비)") end
+			parts[#parts+1] = "위협=" .. table.concat(ts, ",")
+		end
+		if #S.threats.targets > 0 then
+			local gs = {}; for _, t in ipairs(S.threats.targets) do gs[#gs+1] = region_disp(t.region) .. (t.near and "(근접)" or "") end
+			parts[#parts+1] = "표적=" .. table.concat(gs, ",")
+		end
+		L[#L+1] = "⚔ 지도: " .. table.concat(parts, " · ")
+	end
+	if S.diplo and (#S.diplo.peace > 0 or #S.diplo.ally > 0) then
+		local dp = {}
+		if #S.diplo.peace > 0 then dp[#dp+1] = "화친가능=" .. first_names(S.diplo.peace, 3) end
+		if #S.diplo.ally > 0 then dp[#dp+1] = "동맹가능=" .. first_names(S.diplo.ally, 3) end
+		L[#L+1] = "🤝 외교: " .. table.concat(dp, " · ")
+	end
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
 	end
@@ -371,6 +608,30 @@ local function build_prose(S, D, cand, prof)
 	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
 	else threat = "국경은 평온합니다" end
 	P[#P+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), eco, threat)
+	-- 긴급 위협(모듈1) — 포위/무방비 우선 (가장 시급하므로 앞에 배치)
+	if S.threats then
+		local Tt = S.threats
+		if Tt.sieges and #Tt.sieges > 0 then
+			local ns = {}
+			for _, k in ipairs(Tt.sieges) do ns[#ns + 1] = region_disp(k) end
+			P[#P+1] = string.format("긴급 — 포위된 정착지: %s. 구원군을 급파하거나 농성으로 버티세요.", table.concat(ns, ", "))
+		end
+		local sset = {}
+		if Tt.sieges then for _, k in ipairs(Tt.sieges) do sset[k] = true end end
+		local undef, defo = {}, {}
+		if Tt.threatened then
+			for _, a in ipairs(Tt.threatened) do
+				if not sset[a.region] then
+					if a.defended then defo[#defo + 1] = a else undef[#undef + 1] = a end
+				end
+			end
+		end
+		if #undef > 0 then
+			P[#P+1] = string.format("위협 — %s 인근에 %s 야전군이 있는데 근처 아군이 없습니다. 회군하거나 증원하세요.", region_disp(undef[1].region), fname(undef[1].faction))
+		elseif #defo > 0 then
+			P[#P+1] = string.format("위협 — %s 인근에 %s 야전군이 있으나 아군이 대응 가능한 위치입니다. 요격을 검토하세요.", region_disp(defo[1].region), fname(defo[1].faction))
+		end
+	end
 	-- 추세 한마디
 	if S.trend then
 		local tp = {}
@@ -397,6 +658,27 @@ local function build_prose(S, D, cand, prof)
 		else
 			P[#P+1] = string.format("%s %s도 챙기세요.", rot(PROSE_CONN), cand[2].label)
 		end
+	end
+	-- 확장 기회(모듈3) — 내 군대 인근 공격 가능 적 정착지
+	if S.threats and S.threats.targets then
+		local nt
+		for _, t in ipairs(S.threats.targets) do if t.near then nt = t; break end end
+		if nt then
+			P[#P+1] = string.format("확장 기회 — 내 군대 인근의 공격 가능 정착지: %s(%s). 여력이 되면 공략을 검토하세요.", region_disp(nt.region), fname(nt.owner))
+		end
+	end
+	-- 외교 기회(모듈4) — 성사 가능한 화친/동맹
+	if S.diplo then
+		if #S.diplo.peace > 0 then
+			P[#P+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", first_names(S.diplo.peace, 2))
+		end
+		if #S.diplo.ally > 0 then
+			P[#P+1] = string.format("외교 — 군사동맹이 가능한 상대: %s. 제안을 검토하세요.", first_names(S.diplo.ally, 2))
+		end
+	end
+	-- 유휴 자원(모듈2) — 연구 미지정
+	if S.research_idle == true then
+		P[#P+1] = "연구가 지정되지 않았습니다. 기술을 골라 착수하세요."
 	end
 	-- 진영 특색 (팁 우선; 시그니처는 이미 후보로 등장할 수 있어 중복 회피. 오프셋으로 다른 팁 선택)
 	if prof and prof.tips and #prof.tips > 0 then
