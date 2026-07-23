@@ -300,9 +300,10 @@ do
 			my_rank = 7, victory = { vtype = "OCCUPY_LOOT_RAZE_OR_SACK_X_SETTLEMENTS", total = 60 },
 		} }
 	local plan = T.plan_generate(S, "소모전")
+	-- v32 시너지: prov_b(미보유 소유주=e_small)는 ① 제거에 흡수 → ②는 차선 prov_a
 	ok(#plan.steps == 3 and plan.steps[1].kind == "elim" and plan.steps[1].key == "e_small"
-		and plan.steps[2].kind == "prov" and plan.steps[2].key == "prov_b"
-		and plan.steps[3].kind == "prep", "생성: 표적/속주/대비 선택",
+		and plan.steps[2].kind == "prov" and plan.steps[2].key == "prov_a"
+		and plan.steps[3].kind == "prep", "생성: 표적/속주(시너지 제외)/대비 선택",
 		plan.steps[1] and (tostring(plan.steps[1].key) .. "/" .. tostring(plan.steps[2] and plan.steps[2].key)))
 
 	-- 갱신: 기준선 승계 + 추세(순항) + 산문
@@ -316,7 +317,7 @@ do
 	local blob = table.concat(T.plan_prose_lines(S), "\n")
 	ok(has(blob, "【전략 계획】") and has(blob, "국력 7위") and has(blob, "60"), "산문: 헤더(국력·장기 승리)")
 	ok(has(blob, "잔여 2정착지(시작 4)") and has(blob, "순항"), "산문: 제거 진행도")
-	ok(has(blob, "3/4") and has(blob, "Gap"), "산문: 속주 진행도+미보유")
+	ok(has(blob, "1/4") and has(blob, "일석이조"), "산문: 차선 속주(1/4)+시너지 일석이조")
 	ok(has(blob, "위기 대비") and has(blob, "92"), "산문: 엔드게임 대비")
 
 	-- 완료 이벤트: 전선 종료(전쟁 목록에서 소멸)
@@ -436,6 +437,73 @@ do
 	local oldr = { steps = { { kind = "prov", key = "prov_t", base = 4, last = 2, created = 3 } } }
 	Sr.plan = T.plan_revise(Sr, "안정", oldr)
 	ok(has(table.concat(T.plan_prose_lines(Sr), "\n"), "3/4 — 순항"), "속주 추세 순항(2→3)")
+
+	-- v32: 전력 대조(승산)·시너지·정보 예산·중복 억제
+	do
+		local Sw = baseS{ border_enemies = { "foe" }, war_set = { foe = true },
+			strat = { enemy = { foe = { regions = 3, strength = 4000 } }, my_strength = 9000,
+				provinces = {}, armies = {}, endgame = { active = {} } } }
+		Sw.plan = T.plan_generate(Sw, "소모전")
+		ok(has(table.concat(T.plan_prose_lines(Sw), "\n"), "야전 전력 우위"), "전력 대조: 우위 표기")
+
+		local Sl = baseS{ border_enemies = { "foe" }, war_set = { foe = true },
+			diplo = { peace = { "foe" }, ally = {} },
+			strat = { enemy = { foe = { regions = 3, strength = 9000 } }, my_strength = 3000,
+				provinces = {}, armies = {}, endgame = { active = {} } } }
+		local pl = T.plan_generate(Sl, "소모전")
+		ok(pl.steps[1] and pl.steps[1].kind == "peace" and pl.steps[1].key == "foe",
+			"승산 판단: 열세+화친가능 → 강화 전환(건재 국면에서도)", pl.steps[1] and pl.steps[1].kind)
+		Sl.diplo = { peace = {}, ally = {} }
+		local pl2 = T.plan_generate(Sl, "소모전")
+		Sl.plan = pl2
+		ok(pl2.steps[1] and pl2.steps[1].kind == "elim", "열세+화친불가 → 제거 유지")
+		ok(has(table.concat(T.plan_prose_lines(Sl), "\n"), "열세 — 요격·증원"), "열세 경고 표기")
+
+		local Ss = baseS{ border_enemies = { "foe" }, war_set = { foe = true },
+			strat = { enemy = { foe = { regions = 2, strength = 1000 } }, my_strength = 5000,
+				provinces = { { key = "provX", owned = 2, total = 3, miss_region = "rX", miss_owner = "foe" } },
+				armies = {}, endgame = { active = {} } } }
+		local ps = T.plan_generate(Ss, "소모전")
+		local has_prov = false
+		for _, st in ipairs(ps.steps) do if st.kind == "prov" then has_prov = true end end
+		ok(not has_prov, "시너지: 속주 단계가 제거에 흡수")
+		Ss.plan = ps
+		ok(has(table.concat(T.plan_prose_lines(Ss), "\n"), "일석이조"), "시너지: 일석이조 문구")
+
+		-- 정보 예산: 과부하 → 플레이버(팁·군주) 탈락 + 총량 상한
+		local So2 = baseS{ turn = 30, immediate = 2, war_count = 4, distant = 2,
+			border_enemies = { "e1", "e2" }, war_set = { e1 = true, e2 = true }, war_names = { "적1", "적2" },
+			leader_key = "wh_main_emp_karl_franz", research_idle = true,
+			trend = { dt = 3, treasury = 100, regions = 1, income = 50 },
+			snowball = { key = "wh_main_grn_greenskins", regions = 30, dominant = true },
+			rival_growth = { dt = 3, growth = 5 },
+			resource = { label = "제국 권위", value = 12, note = "낮음", urgent = true },
+			threats = { sieges = { "sg" }, my_field = {},
+				threatened = { { region = "r1", faction = "e9", defended = false } },
+				targets = { { region = "t1", owner = "e9", my_border = "b", near = true } } },
+			diplo = { peace = { "e9" }, ally = { "a1" } },
+			province = { unrest = { { region = "ru", po = -60 } }, corruption = { region = "rc", label = "너글", value = 80 } },
+			strat = { enemy = { e1 = { regions = 4 }, e2 = { regions = 6 } }, my_strength = 5000,
+				provinces = { { key = "pv", owned = 1, total = 3, miss_region = "mr", miss_owner = "zz" } },
+				armies = { { name = "A", units = 10, art = 0, avg = 50 } },
+				endgame = { armed = { scenario = "endgame_waaagh", turn = 60 }, active = { "vermintide" } } } }
+		So2.plan = T.plan_revise(So2, "궁지", nil)
+		local _, _, _, prose_o = run(So2)
+		local nl = 0; for _ in prose_o:gmatch("[^\n]+") do nl = nl + 1 end
+		ok(nl <= 16, "정보 예산: 과부하 총량 제한", tostring(nl))
+		ok(not has(prose_o, "답게"), "정보 예산: 팁 탈락")
+		ok(not has(prose_o, "카를 프란츠:"), "정보 예산: 군주 탈락")
+
+		-- 중복 억제: 확장 표적 소유주가 계획 대상이면 확장줄 대신 계획 '다음 수'
+		local Sv3 = baseS{ border_enemies = { "own" }, war_set = { own = true },
+			threats = { sieges = {}, threatened = {}, my_field = {},
+				targets = { { region = "tg", owner = "own", my_border = "b", near = true } } },
+			strat = { enemy = { own = { regions = 2 } }, provinces = {}, armies = {}, endgame = { active = {} } } }
+		Sv3.plan = T.plan_generate(Sv3, "소모전")
+		local _, _, _, prose_v = run(Sv3)
+		ok(not has(prose_v, "확장 기회 — "), "중복 억제: 커버된 확장줄 제거")
+		ok(has(prose_v, "다음 수: "), "계획이 다음 수로 흡수")
+	end
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
