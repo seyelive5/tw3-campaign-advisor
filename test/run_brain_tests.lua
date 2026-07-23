@@ -54,7 +54,7 @@ local function baseS(o)
 		leader_name = "Karl", leader_key = "wh_main_emp_karl_franz",
 		turn = 20, treasury = 9000, income = 3000, net = 800, losing = false,
 		regions = 5, provinces = 2, armies = 4, generals = 3, research_idle = false,
-		war_count = 1, border_enemies = {}, border_others = { "wh_main_brt_bretonnia" },
+		war_count = 1, border_enemies = {}, war_set = {}, border_others = { "wh_main_brt_bretonnia" },
 		immediate = 0, distant = 1, my_regions = 5,
 		weak_target = nil, weak_target_r = 9999, strong_enemy = nil, strong_enemy_r = -1,
 		war_names = {},
@@ -274,6 +274,94 @@ do
 		assert(#prose > 0 and #brief > 0)
 	end)
 	ok(okrun, "전 필드 nil이어도 무예외", err)
+end
+
+-- ══ 8. 전략 2.0 계획 엔진 ═══════════════════════════════════════════
+log("== 8. 전략 2.0 계획 엔진 ==")
+do
+	-- 직렬화 왕복
+	local p0 = { steps = {
+		{ kind = "elim", key = "wh_x", base = 4, last = 3, created = 10 },
+		{ kind = "prov", key = "reikland", base = 4, last = 2, created = 10 },
+		{ kind = "posture", key = "tech", base = 0, last = 0, created = 11 },
+	} }
+	local p1 = T.plan_deserialize(T.plan_serialize(p0))
+	ok(#p1.steps == 3 and p1.steps[1].kind == "elim" and p1.steps[1].key == "wh_x"
+		and p1.steps[1].base == 4 and p1.steps[3].key == "tech", "직렬화 왕복")
+
+	-- 생성: 제거(잔여 최소) + 속주(gap 최소) + 대비(무장 위기)
+	local S = baseS{
+		border_enemies = { "e_big", "e_small" }, war_set = { e_big = true, e_small = true },
+		strat = {
+			enemy = { e_big = { regions = 9 }, e_small = { regions = 2 } },
+			provinces = { { key = "prov_a", owned = 1, total = 4 },
+				{ key = "prov_b", owned = 3, total = 4, miss_region = "reg_gap", miss_owner = "e_small" } },
+			armies = {}, endgame = { armed = { scenario = "endgame_vermintide", turn = 92 }, active = {} },
+			my_rank = 7, victory = { vtype = "OCCUPY_LOOT_RAZE_OR_SACK_X_SETTLEMENTS", total = 60 },
+		} }
+	local plan = T.plan_generate(S, "소모전")
+	ok(#plan.steps == 3 and plan.steps[1].kind == "elim" and plan.steps[1].key == "e_small"
+		and plan.steps[2].kind == "prov" and plan.steps[2].key == "prov_b"
+		and plan.steps[3].kind == "prep", "생성: 표적/속주/대비 선택",
+		plan.steps[1] and (tostring(plan.steps[1].key) .. "/" .. tostring(plan.steps[2] and plan.steps[2].key)))
+
+	-- 갱신: 기준선 승계 + 추세(순항) + 산문
+	local old = { steps = { { kind = "elim", key = "e_small", base = 4, last = 3, created = 5 } } }
+	local np, ev = T.plan_revise(S, "소모전", old)
+	ok(np.steps[1].kind == "elim" and np.steps[1].base == 4 and np.steps[1].last == 2
+		and np.steps[1].prev == 3 and np.steps[1].created == 5,
+		"갱신: 기준선(시작4)·prev(3)·created 승계",
+		tostring(np.steps[1].base) .. "/" .. tostring(np.steps[1].prev))
+	S.plan, S.plan_events = np, ev
+	local blob = table.concat(T.plan_prose_lines(S), "\n")
+	ok(has(blob, "【전략 계획】") and has(blob, "국력 7위") and has(blob, "60"), "산문: 헤더(국력·장기 승리)")
+	ok(has(blob, "잔여 2정착지(시작 4)") and has(blob, "순항"), "산문: 제거 진행도")
+	ok(has(blob, "3/4") and has(blob, "Gap"), "산문: 속주 진행도+미보유")
+	ok(has(blob, "위기 대비") and has(blob, "92"), "산문: 엔드게임 대비")
+
+	-- 완료 이벤트: 전선 종료(전쟁 목록에서 소멸)
+	local S2 = baseS{ border_enemies = {}, war_set = {},
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local old2 = { steps = { { kind = "elim", key = "e_dead", base = 4, last = 1, created = 5 } } }
+	local np2, ev2 = T.plan_revise(S2, "안정", old2)
+	ok(#ev2 == 1 and has(ev2[1], "전선 종료"), "완료: 제거 대상 소멸 이벤트", ev2[1])
+	ok(np2.steps[1] and np2.steps[1].kind == "posture", "완료 후 자세 단계로 재생성",
+		np2.steps[1] and np2.steps[1].kind)
+
+	-- 속주 완성 이벤트
+	local S3 = baseS{ war_set = {},
+		strat = { enemy = {}, provinces = { { key = "prov_b", owned = 4, total = 4 } }, armies = {}, endgame = { active = {} } } }
+	local old3 = { steps = { { kind = "prov", key = "prov_b", base = 4, last = 3, created = 5 } } }
+	local _, ev3 = T.plan_revise(S3, "안정", old3)
+	ok(#ev3 == 1 and has(ev3[1], "속주 완성"), "완료: 속주 완성 이벤트", ev3[1])
+
+	-- 군단 점검: 충원율 + 야포 경고
+	local S4 = baseS{
+		threats = { sieges = {}, threatened = {}, my_field = {},
+			targets = { { region = "t", owner = "e", my_border = "b", near = true } } },
+		strat = { enemy = {}, provinces = {}, endgame = { active = {} },
+			armies = { { name = "카를", units = 19, art = 0, avg = 62 }, { name = "B", units = 10, art = 0, avg = 95 } } } }
+	S4.plan = T.plan_generate(S4, "안정")
+	local blob4 = table.concat(T.plan_prose_lines(S4), "\n")
+	ok(has(blob4, "충원율 62%") and has(blob4, "야포 0문"), "산문: 군단 점검(충원·야포)")
+
+	-- 진행 중 위기 경고
+	local S5 = baseS{ war_set = {},
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = { "vermintide" } } } }
+	S5.plan = T.plan_generate(S5, "안정")
+	ok(has(table.concat(T.plan_prose_lines(S5), "\n"), "진행 중 위기"), "산문: 활성 위기 경고")
+
+	-- 과확장 → 내실 자세 / strat nil 안전
+	local S6 = baseS{ border_enemies = {}, strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local p6 = T.plan_generate(S6, "과확장")
+	ok(p6.steps[#p6.steps] and p6.steps[#p6.steps].kind == "posture" and p6.steps[#p6.steps].key == "consolidate",
+		"과확장 → consolidate 자세")
+	local S7 = baseS{ strat = nil }
+	local p7 = T.plan_generate(S7, nil)
+	ok(p7.steps[1] and p7.steps[1].kind == "posture", "strat nil → posture 폴백")
+	S7.plan = p7
+	ok(#T.plan_prose_lines(S7) >= 1, "strat nil 산문 무예외")
+	ok(T.endgame_disp("endgame_wild_hunt") == "wild hunt", "endgame_disp 정리")
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

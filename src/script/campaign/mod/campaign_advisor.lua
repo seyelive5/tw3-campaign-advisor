@@ -428,6 +428,7 @@ local function gather_state()
 	-- 전쟁 집합 + 국경 인접 → 즉각/먼 위협, 비적대 이웃 구분
 	local war_set, war_count = key_set(function() return f:factions_at_war_with() end, 60)
 	S.war_count = war_count
+	S.war_set = war_set   -- 전략 2.0: 계획 엔진의 "아직 전쟁 중인가" 판정용
 	local neighbors = gather_neighbors(f, S.faction)
 	S.border_enemies, S.border_others = {}, {}
 	for k in pairs(neighbors) do
@@ -681,6 +682,20 @@ local function build_briefing(S, D, cand, prof)
 		L[#L+1] = string.format("🌩 최강라이벌: %s(영토 %d%s)", fname(S.snowball.key), S.snowball.regions, mark)
 	end
 	if S.resource then L[#L+1] = string.format("⚙ 종족자원 %s: %d", S.resource.label, math.floor(S.resource.value)) end
+	if S.strat then
+		L[#L+1] = string.format("⚑ 전략상태: 국력%s · 속주%d · 군단%d · 위기[무장:%s 활성:%d] · 승리[%s/%s]",
+			tostring(S.strat.my_rank or "?"), #(S.strat.provinces or {}), #(S.strat.armies or {}),
+			(S.strat.endgame and S.strat.endgame.armed) and tostring(S.strat.endgame.armed.scenario) or "-",
+			(S.strat.endgame and #(S.strat.endgame.active or {})) or 0,
+			tostring((S.strat.victory and S.strat.victory.vtype) or "-"), tostring((S.strat.victory and S.strat.victory.total) or "-"))
+	end
+	if S.plan and S.plan.steps and #S.plan.steps > 0 then
+		local ps = {}
+		for _, s in ipairs(S.plan.steps) do
+			ps[#ps+1] = string.format("%s:%s(%s/%s)", s.kind, tostring(s.key), tostring(s.last), tostring(s.base))
+		end
+		L[#L+1] = "⚑ 계획: " .. table.concat(ps, " → ")
+	end
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
 	end
@@ -734,11 +749,15 @@ local function josa(word, withB, without)
 	if has_batchim(word) == true then return withB else return without end
 end
 
+local plan_prose_lines   -- 전방 선언(전략 2.0 — 실제 정의는 아래 계획 엔진 섹션; upvalue 바인딩)
+
 local function build_prose(S, D, cand, prof)
 	local race = (prof and prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
 	local rot = function(t) return t[(g_click - 1) % #t + 1] end
 	local P = {}
-	-- 전략 국면(②) — 최상위 판단을 맨 앞에
+	-- 전략 계획(2.0) — 최상단: "앞으로 무엇을"의 직답
+	for _, l in ipairs(plan_prose_lines(S)) do P[#P+1] = l end
+	-- 전략 국면(②) — 상위 판단
 	do
 		local dg = diagnose(S, D)
 		if dg then P[#P+1] = string.format("【국면 · %s】 %s.", dg.label, dg.note) end
@@ -943,6 +962,320 @@ local function record_snapshot(S, hist)
 	end)
 end
 
+--[[═════════════════════════════════════════════════════════════════════
+  전략 2.0 (v29) — 다턴 계획 엔진: "신호 나열"이 아니라 "지속되는 계획"
+  ------------------------------------------------------------------------
+  근거 API 전부 바닐라 실측(docs/strategic_api_catalog.md):
+    국력순위 world:faction_strength_rank / 속주 num_regions_controlled_in_
+    province_by_faction→(보유,전체) / 부대 unit_class·percentage_proportion_
+    of_full_strength / 엔드게임 get_saved_value("endgame_scenario_data") /
+    승리조건 victory_objectives_ie 전역.
+  계획은 cm:set_saved_value("advisor_plan")로 세이브에 지속 → 매 클릭
+  진행도 추적(시작 N → 현재 M, 순항/정체/역전) 후 자가 갱신.
+═══════════════════════════════════════════════════════════════════════]]
+
+-- 엔드게임 시나리오 키 → 표시명(로컬라이즈 키 미확보 → 키 정리 폴백)
+local function endgame_disp(name)
+	return (tostring(name):gsub("^endgame_", ""):gsub("_", " "))
+end
+
+-- ── 전략 상태 수집(API 경계, 전부 pcall) ─────────────────────────────
+-- ST = { my_rank, provinces={{key,owned,total,miss_region,miss_owner}..},
+--        enemy={[fkey]={regions,rank}}, armies={{name,units,art,avg}..},
+--        endgame={armed={scenario,turn}|nil, active={이름..}}, victory={vtype,total}|nil }
+local function collect_strategic(S)
+	local ST = { provinces = {}, enemy = {}, armies = {}, endgame = { active = {} } }
+	pcall(function()
+		local f = cm:get_local_faction(true)
+		if not f then return end
+		pcall(function() ST.my_rank = cm:model():world():faction_strength_rank(f) end)
+		-- 속주 완성 현황(내 지역 기준 속주 dedupe)
+		pcall(function()
+			local regions = f:region_list(); local rn = regions:num_items()
+			local seen = {}
+			for i = 0, math.min(rn, 40) - 1 do
+				local reg = regions:item_at(i)
+				local pn = nil; pcall(function() pn = reg:province_name() end)
+				if pn and not seen[pn] then
+					seen[pn] = true
+					pcall(function()
+						local prov = reg:province()
+						local owned, total = cm:num_regions_controlled_in_province_by_faction(prov, f)
+						local e = { key = pn, owned = owned, total = total }
+						if S.faction and owned and total and owned < total then
+							pcall(function()   -- 미보유 지역 1곳(표시용)
+								local pl = prov:regions(); local pn2 = pl:num_items()
+								for j = 0, pn2 - 1 do
+									local r2 = pl:item_at(j)
+									local of = r2:owning_faction()
+									local oname = (of and not of:is_null_interface()) and of:name() or nil
+									if oname ~= S.faction then
+										e.miss_region = r2:name(); e.miss_owner = oname
+										break
+									end
+								end
+							end)
+						end
+						if owned and total then ST.provinces[#ST.provinces + 1] = e end
+					end)
+				end
+			end
+		end)
+		-- 국경 전쟁적 상세(잔여 영토·국력순위) — 제거 표적 랭킹용
+		for i = 1, math.min(#(S.border_enemies or {}), 8) do
+			local k = S.border_enemies[i]
+			if k and not ST.enemy[k] then
+				pcall(function()
+					local ef = cm:get_faction(k, false)
+					if ef and not ef:is_null_interface() then
+						local e = { regions = ef:region_list():num_items() }
+						pcall(function() e.rank = cm:model():world():faction_strength_rank(ef) end)
+						ST.enemy[k] = e
+					end
+				end)
+			end
+		end
+		-- 군단 점검(야전군: 유닛수·야포(art_fld)·평균 충원율)
+		pcall(function()
+			local ml = f:military_force_list(); local mn = ml:num_items()
+			for i = 0, math.min(mn, 12) - 1 do
+				local mf = ml:item_at(i)
+				local okmf = false
+				pcall(function() okmf = mf:has_general() and not mf:is_armed_citizenry() end)
+				if okmf then
+					local a = { units = 0, art = 0 }
+					pcall(function()
+						local ul = mf:unit_list(); local un = ul:num_items()
+						a.units = un
+						local sum, cnt = 0, 0
+						for j = 0, math.min(un, 25) - 1 do
+							local u = ul:item_at(j)
+							pcall(function() if u:unit_class() == "art_fld" then a.art = a.art + 1 end end)
+							pcall(function()
+								local p = u:percentage_proportion_of_full_strength()
+								if p then sum = sum + p; cnt = cnt + 1 end
+							end)
+						end
+						if cnt > 0 then a.avg = math.floor(sum / cnt + 0.5) end
+					end)
+					pcall(function()
+						local loc = common.get_localised_string(mf:general_character():get_forename())
+						if loc and loc ~= "" then a.name = loc end
+					end)
+					ST.armies[#ST.armies + 1] = a
+				end
+			end
+		end)
+		-- 엔드게임: 무장(예고)된 위기 + 이미 발동한 위기
+		pcall(function()
+			local sd = cm:get_saved_value("endgame_scenario_data")
+			if type(sd) == "table" and sd.scenario then
+				ST.endgame.armed = { scenario = tostring(sd.scenario), turn = tonumber(sd.turn) }
+			end
+		end)
+		pcall(function()
+			if type(endgame) == "table" and type(endgame.scenarios) == "table" then
+				for _, name in ipairs(endgame.scenarios) do
+					if cm:get_saved_value("endgame_" .. tostring(name) .. "_saved_data") then
+						ST.endgame.active[#ST.endgame.active + 1] = tostring(name)
+					end
+				end
+			end
+		end)
+		-- 승리조건(장기): 진영 오버라이드 → 정렬(alignment) 기본
+		pcall(function()
+			local vo = victory_objectives_ie
+			if type(vo) ~= "table" then return end
+			local objs = nil
+			pcall(function()
+				local fo = vo.factions and vo.factions[S.faction]
+				if fo and fo.objectives then objs = fo.objectives end
+			end)
+			if not objs then
+				local align = nil
+				pcall(function() align = vo.subcultures[S.subculture].alignment end)
+				if align then pcall(function() objs = vo.alignments[align]["wh_main_long_victory"].objectives end) end
+			end
+			if type(objs) == "table" and objs[1] then
+				local o = objs[1]
+				local total = nil
+				for _, c in ipairs(o.conditions or {}) do
+					local t = tostring(c):match("^total%s+(%d+)$")
+					if t then total = tonumber(t); break end
+				end
+				ST.victory = { vtype = tostring(o.type or "?"), total = total }
+			end
+		end)
+	end)
+	return ST
+end
+
+-- ── 계획 직렬화(세이브값) — 줄당 kind|key|base|last|created|status ────
+local function plan_serialize(plan)
+	local L = {}
+	for _, s in ipairs((plan and plan.steps) or {}) do
+		L[#L + 1] = string.format("%s|%s|%d|%d|%d|%s",
+			s.kind, s.key or "-", s.base or 0, s.last or 0, s.created or 0, s.status or "active")
+	end
+	return table.concat(L, "\n")
+end
+local function plan_deserialize(raw)
+	local plan = { steps = {} }
+	if type(raw) ~= "string" then return plan end
+	for line in raw:gmatch("[^\n]+") do
+		local kind, key, base, last, created, status = line:match("([^|]+)|([^|]*)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%a+)")
+		if kind then
+			plan.steps[#plan.steps + 1] = { kind = kind, key = (key ~= "-" and key or nil),
+				base = tonumber(base), last = tonumber(last), created = tonumber(created), status = status }
+		end
+	end
+	return plan
+end
+
+-- ── 계획 생성(순수) — ①제거 표적 ②속주 완성 ③대비/자세, 최대 3단계 ──
+local function plan_generate(S, dglabel)
+	local steps, ST = {}, S.strat or {}
+	-- ① 군사: 국경 전쟁적 중 잔여 영토 최소(가장 빨리 끝낼 전선)
+	local best
+	for i = 1, #(S.border_enemies or {}) do
+		local k = S.border_enemies[i]
+		local e = ST.enemy and ST.enemy[k]
+		if e and e.regions and e.regions > 0 then
+			if not best or e.regions < best.regions then best = { key = k, regions = e.regions } end
+		end
+	end
+	if best then
+		steps[#steps + 1] = { kind = "elim", key = best.key, base = best.regions, last = best.regions, created = num(S.turn, 0) }
+	end
+	-- ② 내정: 미완 속주 중 남은 칸(gap) 최소 → 완성 임박 우선(CA 자체 넛지와 동일 설계)
+	local bp
+	for _, p in ipairs(ST.provinces or {}) do
+		if p.owned and p.total and p.owned < p.total then
+			local gap = p.total - p.owned
+			if not bp or gap < bp.gap or (gap == bp.gap and p.owned > bp.owned) then
+				bp = { key = p.key, gap = gap, owned = p.owned, total = p.total }
+			end
+		end
+	end
+	if bp then
+		steps[#steps + 1] = { kind = "prov", key = bp.key, base = bp.total, last = bp.owned, created = num(S.turn, 0) }
+	end
+	-- ③ 대비/자세
+	if ST.endgame and ST.endgame.armed then
+		steps[#steps + 1] = { kind = "prep", key = ST.endgame.armed.scenario, base = ST.endgame.armed.turn or 0, last = 0, created = num(S.turn, 0) }
+	elseif dglabel == "과확장" then
+		steps[#steps + 1] = { kind = "posture", key = "consolidate", base = 0, last = 0, created = num(S.turn, 0) }
+	elseif #steps == 0 then
+		steps[#steps + 1] = { kind = "posture", key = (S.weak_target and "expand" or "tech"), base = 0, last = 0, created = num(S.turn, 0) }
+	end
+	return { steps = steps }
+end
+
+-- ── 계획 갱신(순수) — 완료 감지 후 재생성 + 기존 단계의 기준선 승계 ──
+local function plan_revise(S, dglabel, old)
+	local events, ST = {}, S.strat or {}
+	for _, s in ipairs((old and old.steps) or {}) do
+		if s.kind == "elim" and s.key then
+			local e = ST.enemy and ST.enemy[s.key]
+			local ended = (e and e.regions and e.regions <= 0)
+				or (type(S.war_set) == "table" and not S.war_set[s.key])
+			if ended then events[#events + 1] = string.format("계획 달성 — %s 전선 종료.", fname(s.key)) end
+		elseif s.kind == "prov" and s.key then
+			for _, p in ipairs(ST.provinces or {}) do
+				if p.key == s.key and p.owned and p.total and p.owned >= p.total then
+					events[#events + 1] = string.format("계획 달성 — %s 속주 완성!", region_disp(s.key))
+					break
+				end
+			end
+		end
+	end
+	local np = plan_generate(S, dglabel)
+	for _, ns in ipairs(np.steps) do
+		for _, os in ipairs((old and old.steps) or {}) do
+			if os.kind == ns.kind and os.key == ns.key then
+				ns.created = os.created or ns.created
+				ns.prev = os.last                       -- 지난 클릭 값(추세용)
+				if ns.kind == "elim" and os.base and os.base > 0 then ns.base = os.base end  -- '시작 N' 유지
+			end
+		end
+	end
+	return np, events
+end
+
+-- ── 계획 산문(순수) — 【전략 계획】 블록 (전방 선언된 local에 할당) ──
+function plan_prose_lines(S)
+	local plan, ST = S.plan, S.strat
+	local L = {}
+	for _, ev in ipairs(S.plan_events or {}) do L[#L + 1] = "✦ " .. ev end
+	if not plan or #(plan.steps or {}) == 0 then return L end
+	local h = {}
+	if ST and ST.my_rank then h[#h + 1] = string.format("국력 %d위", ST.my_rank) end
+	if ST and ST.victory and ST.victory.total and ST.victory.vtype == "OCCUPY_LOOT_RAZE_OR_SACK_X_SETTLEMENTS" then
+		h[#h + 1] = string.format("장기 승리: 정착지 %d곳 점령/파괴(현재 %s)", ST.victory.total, tostring(num(S.regions, "?")))
+	end
+	L[#L + 1] = "【전략 계획】" .. (#h > 0 and (" " .. table.concat(h, " · ")) or "")
+	local NUMS = { "①", "②", "③" }
+	for i = 1, math.min(#plan.steps, 3) do
+		local s, line = plan.steps[i], nil
+		if s.kind == "elim" then
+			local trend = ""
+			if s.prev and s.last then
+				if s.last < s.prev then trend = " — 순항"
+				elseif s.last > s.prev then trend = " — 역전(적이 성장)"
+				elseif s.created and num(S.turn, 0) > s.created then trend = " — 정체" end
+			end
+			line = string.format("%s %s 제거 — 잔여 %d정착지(시작 %d)%s.", NUMS[i], fname(s.key), s.last or 0, s.base or s.last or 0, trend)
+			if S.threats and S.threats.targets then
+				for _, t in ipairs(S.threats.targets) do
+					if t.owner == s.key and t.near then
+						line = line .. string.format(" 다음 수: %s 공략.", region_disp(t.region)); break
+					end
+				end
+			end
+		elseif s.kind == "prov" then
+			line = string.format("%s %s 속주 완성 — %d/%d.", NUMS[i], region_disp(s.key), s.last or 0, s.base or 0)
+			for _, p in ipairs((ST and ST.provinces) or {}) do
+				if p.key == s.key and p.miss_region then
+					line = line .. string.format(" 미보유: %s%s.", region_disp(p.miss_region),
+						p.miss_owner and ("(" .. fname(p.miss_owner) .. ")") or "")
+					break
+				end
+			end
+		elseif s.kind == "prep" then
+			line = string.format("%s 위기 대비 — '%s' %s턴 발동 예정(현재 %s턴). 자금과 예비군을 비축하세요.",
+				NUMS[i], endgame_disp(s.key), tostring(s.base or "?"), tostring(num(S.turn, "?")))
+		elseif s.kind == "posture" then
+			local m = {
+				consolidate = "내실 — 확장을 멈추고 통합·방어를 정비",
+				expand = "확장 준비 — 약한 이웃 방면으로 다음 전쟁을 설계",
+				tech = "내실 — 기술·경제 축적으로 다음 도약을 준비",
+			}
+			line = NUMS[i] .. " " .. (m[s.key] or "자세 정비") .. "."
+		end
+		if line then L[#L + 1] = line end
+	end
+	if ST and ST.endgame and #(ST.endgame.active or {}) > 0 then
+		L[#L + 1] = "⚠ 진행 중 위기: " .. endgame_disp(ST.endgame.active[1]) .. " — 최우선 대응."
+	end
+	-- 군단 점검 1줄(검증 가능한 신호만: 충원율·야포)
+	if ST and ST.armies and #ST.armies > 0 then
+		local weakest, art_total = nil, 0
+		for _, a in ipairs(ST.armies) do
+			art_total = art_total + (a.art or 0)
+			if a.avg and (not weakest or a.avg < weakest.avg) then weakest = a end
+		end
+		local parts = {}
+		if weakest and weakest.avg and weakest.avg < 70 then
+			parts[#parts + 1] = string.format("%s 군단 충원율 %d%% — 회복 후 진격", weakest.name or "일부", weakest.avg)
+		end
+		if art_total == 0 and S.threats and S.threats.targets and #S.threats.targets > 0 then
+			parts[#parts + 1] = "야포 0문 — 공성 장기화 주의"
+		end
+		if #parts > 0 then L[#L + 1] = "군단 점검: " .. table.concat(parts, " · ") .. "." end
+	end
+	return L
+end
+
 -- ── 팝업 패널 (v11) — CA 공식 패턴: scripted_subtitles + text_child ──
 -- 근거: 바닐라 lib_campaign_manager.lua show_subtitle(). CreateComponent
 --   "UI/Common UI/scripted_subtitles.twui.xml" → find "text_child" 자식에 SetStateText.
@@ -1069,7 +1402,17 @@ local function run_advisor()
 			#hist, S.trend and "O" or "X(첫턴/미축적)",
 			S.snowball and tostring(S.snowball.key) or "없음",
 			S.resource and tostring(S.resource.label) or "없음(미커버 종족)"), true)
+		S.strat = collect_strategic(S)                     -- 전략 2.0: 속주·국력·군단·엔드게임·승리조건
 		local D, cand = analyze(S, prof)
+		-- 전략 2.0: 다턴 계획 — 로드 → 완료 감지·기준선 승계 갱신 → 저장
+		do
+			local dg = diagnose(S, D)
+			local oldraw = nil
+			pcall(function() oldraw = cm:get_saved_value("advisor_plan") end)
+			local plan, events = plan_revise(S, dg and dg.label, plan_deserialize(oldraw))
+			S.plan, S.plan_events = plan, events
+			pcall(function() cm:set_saved_value("advisor_plan", plan_serialize(plan)) end)
+		end
 		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 구조화 블록
 		local prose = build_prose(S, D, cand, prof)        -- 자연어 산문
 		proof("[참모 브리핑] " .. prose, true)             -- 파일에도 산문 기록
@@ -1134,5 +1477,9 @@ if ADVISOR_TEST_EXPORTS then
 		read_history = read_history, compute_trend = compute_trend,
 		compute_rival_growth = compute_rival_growth, record_snapshot = record_snapshot,
 		gather_resource = gather_resource,
+		-- 전략 2.0(순수부)
+		plan_serialize = plan_serialize, plan_deserialize = plan_deserialize,
+		plan_generate = plan_generate, plan_revise = plan_revise,
+		plan_prose_lines = plan_prose_lines, endgame_disp = endgame_disp,
 	}
 end
