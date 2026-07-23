@@ -71,9 +71,12 @@ function Get-SchemaFields {
     if ($m.Success -and [int]$m.Groups[1].Value -eq $version) { $chunk = $p; break }
   }
   if (-not $chunk) { throw "테이블 $table 에 version $version 스키마 없음" }
-  # fields: [ ... ] 영역만
+  # fields: [ ... ] 영역만 — ★localised_fields는 db 바이너리에 없음(.loc 파일 소관)!
+  #   기존 버그: version 청크 전체를 긁어 localised_fields까지 컬럼으로 포함 → wide 테이블 4컬럼 과독 desync.
   $fi = $chunk.IndexOf('fields:')
   $chunk = $chunk.Substring($fi)
+  $li = $chunk.IndexOf('localised_fields:')
+  if ($li -ge 0) { $chunk = $chunk.Substring(0, $li) }
   $rx = [regex]'name:\s*"([^"]+)",\s*field_type:\s*(\w+)'
   $fields = New-Object System.Collections.Generic.List[object]
   foreach ($m in $rx.Matches($chunk)) { $fields.Add([pscustomobject]@{ Name=$m.Groups[1].Value; Type=$m.Groups[2].Value }) }
