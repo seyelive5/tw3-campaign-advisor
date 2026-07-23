@@ -1026,18 +1026,22 @@ end
 local function gather_resource(prof)
 	if not (prof and prof.resources and #prof.resources > 0) then return nil end
 	local outv = nil
+	local diag = {}   -- DEBUG용: 키별 조회 상태
 	pcall(function()
 		local f = cm:get_local_faction(true)
-		if not f then return end
+		if not f then diag[#diag+1] = "팩션없음"; return end
 		local prm = f:pooled_resource_manager()
-		if not prm then return end
+		if not prm then diag[#diag+1] = "prm없음"; return end
 		for _, r in ipairs(prof.resources) do
 			local res = nil
 			pcall(function() res = prm:resource(r.key) end)
-			if res and not res:is_null_interface() then
+			if not res then diag[#diag+1] = r.key .. ":res-nil"
+			elseif res:is_null_interface() then diag[#diag+1] = r.key .. ":null(팩션에 없음)"
+			else
 				local v = nil
 				pcall(function() v = res:value() end)
-				if v then
+				if v == nil then diag[#diag+1] = r.key .. ":값읽기실패"
+				else
 					local note, urgent = r.note, false
 					if r.low_thresh and v <= r.low_thresh and r.low_note then note = r.low_note; urgent = true end
 					outv = { label = r.label, value = v, note = note, urgent = urgent }
@@ -1046,6 +1050,9 @@ local function gather_resource(prof)
 			end
 		end
 	end)
+	if DEBUG_FILE and not outv and #diag > 0 then
+		pcall(function() proof("[디버그] 종족자원 미해결 → " .. table.concat(diag, " / "), true) end)
+	end
 	return outv
 end
 
