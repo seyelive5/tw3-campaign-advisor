@@ -176,6 +176,26 @@ local function region_disp(key)
 	return disp
 end
 
+-- 속주 키 → 표시명. "provinces_onscreen_" 로컬 키는 스크립트 실측 없음(loc DB 추정) —
+-- pcall+빈문자열 체크라 실패해도 무해, 성공하면 한글. 폴백=키 꼬리 정리.
+local g_prov_cache = {}
+local function province_disp(key)
+	if type(key) ~= "string" then return "(속주?)" end
+	local c = g_prov_cache[key]
+	if c then return c end
+	local disp = nil
+	pcall(function()
+		local loc = common.get_localised_string("provinces_onscreen_" .. key)
+		if loc and loc ~= "" then disp = loc end
+	end)
+	if not disp then
+		local tail = key:match("([^_]+)$") or key
+		disp = tail:sub(1, 1):upper() .. tail:sub(2)
+	end
+	g_prov_cache[key] = disp
+	return disp
+end
+
 -- 야전군이면 그 군대가 선 지역 키, 아니면 nil(수비대·무장시민 제외).
 local function army_region_name(mf)
 	local rn = nil
@@ -842,10 +862,18 @@ local function build_prose(S, D, cand, prof)
 			P[#P+1] = string.format("확장 기회 — 내 군대 인근의 공격 가능 정착지: %s(%s). 여력이 되면 공략을 검토하세요.", region_disp(nt.region), fname(nt.owner))
 		end
 	end
-	-- 외교 기회(모듈4) — 성사 가능한 화친/동맹
+	-- 외교 기회(모듈4) — 성사 가능한 화친/동맹. 계획의 '제거 표적'과 모순되지 않게 분리(일관성).
 	if S.diplo then
 		if #S.diplo.peace > 0 then
-			P[#P+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", first_names(S.diplo.peace, 2))
+			local elim_key = nil
+			if S.plan then for _, st in ipairs(S.plan.steps or {}) do if st.kind == "elim" then elim_key = st.key; break end end end
+			local show = {}
+			for _, k in ipairs(S.diplo.peace) do if k ~= elim_key then show[#show + 1] = k end end
+			if #show > 0 then
+				P[#P+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", first_names(show, 2))
+			elseif elim_key then
+				P[#P+1] = string.format("외교 — %s와의 화친도 성사 가능하나, 계획상 제거가 우선입니다. 전황이 급하면 화친으로 전선을 줄이는 선택도 유효합니다.", fname(elim_key))
+			end
 		end
 		if #S.diplo.ally > 0 then
 			P[#P+1] = string.format("외교 — 군사동맹이 가능한 상대: %s. 제안을 검토하세요.", first_names(S.diplo.ally, 2))
@@ -1082,7 +1110,8 @@ local function collect_strategic(S)
 				end
 			end
 		end)
-		-- 승리조건(장기): 진영 오버라이드 → 정렬(alignment) 기본
+		-- 승리조건(장기): 팩션 오버라이드 → subculture 오버라이드(실측 :334) → alignment 기본.
+		-- 전 objectives 스캔: DESTROY_FACTION 대상("faction X") / "total N" / "province X" 개수.
 		pcall(function()
 			local vo = victory_objectives_ie
 			if type(vo) ~= "table" then return end
@@ -1091,20 +1120,32 @@ local function collect_strategic(S)
 				local fo = vo.factions and vo.factions[S.faction]
 				if fo and fo.objectives then objs = fo.objectives end
 			end)
+			if not objs then pcall(function()
+				local so = vo.subcultures[S.subculture]
+				if so and so.objectives then objs = so.objectives end
+			end) end
 			if not objs then
 				local align = nil
 				pcall(function() align = vo.subcultures[S.subculture].alignment end)
 				if align then pcall(function() objs = vo.alignments[align]["wh_main_long_victory"].objectives end) end
 			end
-			if type(objs) == "table" and objs[1] then
-				local o = objs[1]
-				local total = nil
+			if type(objs) ~= "table" or not objs[1] then return end
+			local V = { vtype = tostring(objs[1].type or "?") }
+			for oi = 1, math.min(#objs, 4) do
+				local o = objs[oi]
 				for _, c in ipairs(o.conditions or {}) do
-					local t = tostring(c):match("^total%s+(%d+)$")
-					if t then total = tonumber(t); break end
+					local cs = tostring(c)
+					local t = cs:match("^total%s+(%d+)$")
+					if t and not V.total then V.total = tonumber(t) end
+					local fk = cs:match("^faction%s+(%S+)$")
+					if fk and tostring(o.type) == "DESTROY_FACTION" then
+						V.targets = V.targets or {}
+						if #V.targets < 4 then V.targets[#V.targets + 1] = fk end
+					end
+					if cs:match("^province%s+%S+") then V.prov_need = (V.prov_need or 0) + 1 end
 				end
-				ST.victory = { vtype = tostring(o.type or "?"), total = total }
 			end
+			ST.victory = V
 		end)
 	end)
 	return ST
@@ -1183,7 +1224,7 @@ local function plan_revise(S, dglabel, old)
 		elseif s.kind == "prov" and s.key then
 			for _, p in ipairs(ST.provinces or {}) do
 				if p.key == s.key and p.owned and p.total and p.owned >= p.total then
-					events[#events + 1] = string.format("계획 달성 — %s 속주 완성!", region_disp(s.key))
+					events[#events + 1] = string.format("계획 달성 — %s 속주 완성!", province_disp(s.key))
 					break
 				end
 			end
@@ -1210,8 +1251,18 @@ function plan_prose_lines(S)
 	if not plan or #(plan.steps or {}) == 0 then return L end
 	local h = {}
 	if ST and ST.my_rank then h[#h + 1] = string.format("국력 %d위", ST.my_rank) end
-	if ST and ST.victory and ST.victory.total and ST.victory.vtype == "OCCUPY_LOOT_RAZE_OR_SACK_X_SETTLEMENTS" then
-		h[#h + 1] = string.format("장기 승리: 정착지 %d곳 점령/파괴(현재 %s)", ST.victory.total, tostring(num(S.regions, "?")))
+	if ST and ST.victory then
+		local V = ST.victory
+		if V.targets and #V.targets > 0 then
+			local extra = (#V.targets > 2) and string.format(" 외 %d", #V.targets - 2) or ""
+			h[#h + 1] = string.format("장기 승리: %s%s 격멸", first_names(V.targets, 2), extra)
+		elseif V.total and V.vtype == "OCCUPY_LOOT_RAZE_OR_SACK_X_SETTLEMENTS" then
+			h[#h + 1] = string.format("장기 승리: 정착지 %d곳 점령/파괴(현재 %s)", V.total, tostring(num(S.regions, "?")))
+		elseif V.total then
+			h[#h + 1] = string.format("장기 승리: 목표 규모 %d", V.total)
+		elseif V.prov_need then
+			h[#h + 1] = string.format("장기 승리: 지정 속주 %d곳 장악", V.prov_need)
+		end
 	end
 	L[#L + 1] = "【전략 계획】" .. (#h > 0 and (" " .. table.concat(h, " · ")) or "")
 	local NUMS = { "①", "②", "③" }
@@ -1233,7 +1284,7 @@ function plan_prose_lines(S)
 				end
 			end
 		elseif s.kind == "prov" then
-			line = string.format("%s %s 속주 완성 — %d/%d.", NUMS[i], region_disp(s.key), s.last or 0, s.base or 0)
+			line = string.format("%s %s 속주 완성 — %d/%d.", NUMS[i], province_disp(s.key), s.last or 0, s.base or 0)
 			for _, p in ipairs((ST and ST.provinces) or {}) do
 				if p.key == s.key and p.miss_region then
 					line = line .. string.format(" 미보유: %s%s.", region_disp(p.miss_region),

@@ -362,6 +362,44 @@ do
 	S7.plan = p7
 	ok(#T.plan_prose_lines(S7) >= 1, "strat nil 산문 무예외")
 	ok(T.endgame_disp("endgame_wild_hunt") == "wild hunt", "endgame_disp 정리")
+
+	-- 일관성: 제거 표적은 화친 제안에서 분리(자기모순 해소, v30)
+	local Sc = baseS{ diplo = { peace = { "pk_target" }, ally = {} },
+		plan = { steps = { { kind = "elim", key = "pk_target", base = 3, last = 3, created = 1 } } } }
+	local _, _, _, prose_c = run(Sc)
+	ok(has(prose_c, "제거가 우선") and not has(prose_c, "화친이 성사 가능한 상대"),
+		"일관성: 제거 표적 → 화친 제안 대체 문구")
+	local Sc2 = baseS{ diplo = { peace = { "pk_target", "wh_main_brt_bretonnia" }, ally = {} },
+		plan = { steps = { { kind = "elim", key = "pk_target", base = 3, last = 3, created = 1 } } } }
+	local _, _, _, prose_c2 = run(Sc2)
+	ok(has(prose_c2, "화친이 성사 가능한 상대: 브레토니아") and not has(prose_c2, "제거가 우선"),
+		"일관성: 다른 상대는 정상 화친 제안")
+
+	-- 승리 헤더: DESTROY_FACTION 대상 / 속주 장악형
+	local Sv = baseS{ war_set = {},
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} }, my_rank = 5,
+			victory = { vtype = "DESTROY_FACTION", targets = { "wh_main_grn_greenskins", "wh_main_vmp_vampire_counts", "x3" } } } }
+	Sv.plan = T.plan_generate(Sv, "안정")
+	local bv = table.concat(T.plan_prose_lines(Sv), "\n")
+	ok(has(bv, "격멸") and has(bv, "그린스킨") and has(bv, "외 1"), "승리 헤더: 격멸 대상+외 N")
+	local Sv2 = baseS{ war_set = {},
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} },
+			victory = { vtype = "CONTROL", prov_need = 5 } } }
+	Sv2.plan = T.plan_generate(Sv2, "안정")
+	ok(has(table.concat(T.plan_prose_lines(Sv2), "\n"), "지정 속주 5곳 장악"), "승리 헤더: 속주 장악형")
+
+	-- 슬라네쉬 자원 교체(신도) 파이프라인
+	do
+		local function fake_res(v) return { is_null_interface = function() return false end, value = function() return v end } end
+		cm.get_local_faction = function()
+			return { pooled_resource_manager = function()
+				return { resource = function(self, key) if key == "wh3_main_sla_devotees" then return fake_res(30) end end }
+			end }
+		end
+		local r = T.gather_resource(CA_FACTION_PROFILES["wh3_main_sc_sla_slaanesh"])
+		ok(r and r.label == "신도" and r.value == 30, "슬라네쉬: devotees로 자원 해결", r and r.label)
+		cm.get_local_faction = function() return nil end
+	end
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

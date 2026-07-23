@@ -171,7 +171,8 @@ CA_FACTION_PROFILES = {
     pr={military=0.8,economy=0.55,diplomacy=0.85,expansion=0.7,tech=0.45,defense=0.3},
     sig={label="유혹 속국화", dim="diplomacy", note="선물→유혹 영향력으로 인간·엘프를 속국화하세요"},
     tips={"기동력으로 각개격파, 정면 난타전은 피하세요","선물→유혹 영향력으로 인간·엘프를 속국화하세요"},
-    resources={ {key="wh3_main_sla_seductive_influence", label="유혹 영향력", note="선물→유혹으로 인간·엘프를 속국화하는 자원입니다"} },
+    -- ※유혹 영향력(seductive_influence)은 '상대' 팩션에 붙는 자원(인게임 실측 null) → 본인 자원인 신도(devotees)로 교체
+    resources={ {key="wh3_main_sla_devotees", label="신도", note="유혹·선물·소환의 원천입니다 — 전투와 지배로 신도를 늘리세요"} },
     lords={ ["wh3_dlc27_sla_masque_of_slaanesh"]={name="가면무도희(마스크)", note="끝없이 춤추는 유혹자. 최고 기동으로 각개격파하고 유혹으로 속국화하세요"},
             ["wh3_dlc27_sla_dechala"]={name="데칼라", note="슬라네쉬 정예 근접. 빠른 강습으로 적진을 유린하세요"},
             ["wh3_main_sla_nkari"]={name="엔카리", note="유일 슬라네쉬 군주, 울투안 시작이 까다로움. 기동·유혹으로 속국화하세요"} } },
