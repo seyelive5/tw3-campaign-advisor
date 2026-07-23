@@ -310,22 +310,61 @@ local function gather_diplomacy(f, war_set, border_enemies, border_others)
 	return D
 end
 
--- ── 속주 내부(④) — 공공질서 위기 감지 ────────────────────────────────
--- API(바닐라 실측): region:public_order() (음수=불안, <=-50 반란 임박). 속주 단위로 최악만 유지.
-local function gather_province_issues(f)
-	local PV = { unrest = {} }
+-- 타락 종류(④) — 속주 pooled_resource로 조회(키는 바닐라 실측 wh3_main_corruption_*). label=표시용.
+local CORR_TYPES = {
+	{ key = "wh3_main_corruption_chaos",    label = "카오스" },
+	{ key = "wh3_main_corruption_khorne",   label = "코른" },
+	{ key = "wh3_main_corruption_nurgle",   label = "너글" },
+	{ key = "wh3_main_corruption_tzeentch", label = "젠취" },
+	{ key = "wh3_main_corruption_slaanesh", label = "슬라네쉬" },
+	{ key = "wh3_main_corruption_skaven",   label = "스케이븐" },
+	{ key = "wh3_main_corruption_vampiric", label = "뱀파이어" },
+}
+-- 타락을 스스로 퍼뜨리는(신경 안 쓰는) subculture — 이들에겐 타락 경고 생략.
+local CORR_IGNORE = {
+	["wh3_main_sc_kho_khorne"] = true, ["wh3_main_sc_nur_nurgle"] = true, ["wh3_main_sc_tze_tzeentch"] = true,
+	["wh3_main_sc_sla_slaanesh"] = true, ["wh3_main_sc_dae_daemons"] = true, ["wh_main_sc_chs_chaos"] = true,
+	["wh_dlc08_sc_nor_norsca"] = true, ["wh_main_sc_vmp_vampire_counts"] = true, ["wh2_dlc11_sc_cst_vampire_coast"] = true,
+	["wh2_main_sc_skv_skaven"] = true, ["wh_dlc03_sc_bst_beastmen"] = true, ["wh2_main_sc_def_dark_elves"] = true,
+}
+
+-- ── 속주 내부(④) — 공공질서 위기 + 적대 타락 감지 ────────────────────
+-- API(바닐라 실측): region:public_order()(음수=불안, <=-50 반란 임박),
+--   region:province():pooled_resource_manager():resource("wh3_main_corruption_*"):value().
+local function gather_province_issues(f, subculture)
+	local PV = { unrest = {} }   -- PV.corruption = {region,label,value} (내 땅 최악, >=50만)
+	local skip_corr = subculture and CORR_IGNORE[subculture]
 	pcall(function()
 		local regions = f:region_list(); local rn = regions:num_items()
-		local seen = {}
+		local seen, corr_seen = {}, {}
 		for i = 0, math.min(rn, 50) - 1 do
 			local reg = regions:item_at(i)
+			local pn = reg:name(); pcall(function() pn = reg:province_name() end)
+			-- 공공질서
 			local po = nil
 			pcall(function() po = reg:public_order() end)
 			if po and po <= -15 then
-				local pn = reg:name(); pcall(function() pn = reg:province_name() end)
 				local a = seen[pn]
 				if not a then a = { region = reg:name(), po = po }; seen[pn] = a; PV.unrest[#PV.unrest + 1] = a
 				elseif po < a.po then a.po = po; a.region = reg:name() end
+			end
+			-- 적대 타락(속주별 1회, 내 땅 전체 최악만; 타락 활용 종족은 스킵)
+			if not skip_corr and not corr_seen[pn] then
+				corr_seen[pn] = true
+				pcall(function()
+					local prm = reg:province():pooled_resource_manager()
+					if prm then
+						for _, ct in ipairs(CORR_TYPES) do
+							local res = nil; pcall(function() res = prm:resource(ct.key) end)
+							if res and not res:is_null_interface() then
+								local v = nil; pcall(function() v = res:value() end)
+								if v and v >= 50 and (not PV.corruption or v > PV.corruption.value) then
+									PV.corruption = { region = reg:name(), label = ct.label, value = v }
+								end
+							end
+						end
+					end
+				end)
 			end
 		end
 	end)
@@ -352,8 +391,9 @@ local function gather_snowball(f, my_regions)
 			end
 		end
 	end)
-	if top and top.regions >= math.max(12, num(my_regions, 0) * 2) then return top end
-	return nil
+	if not top then return nil end
+	top.dominant = top.regions >= math.max(12, num(my_regions, 0) * 2)   -- 압도적이면 즉시 경고, 아니면 성장률 추적용
+	return top
 end
 
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
@@ -410,7 +450,7 @@ local function gather_state()
 	-- 외교 기회(모듈4): 성사 가능한 화친/동맹
 	S.diplo = gather_diplomacy(f, war_set, S.border_enemies, S.border_others)
 	-- 속주 내부(④): 공공질서 위기
-	S.province = gather_province_issues(f)
+	S.province = gather_province_issues(f, S.subculture)
 	-- 스노우볼 감시(⑥): 압도적으로 큰 비동맹 세력
 	S.snowball = gather_snowball(f, S.regions)
 	return S
@@ -592,7 +632,7 @@ local function build_briefing(S, D, cand, prof)
 	L[#L+1] = string.format("팩션 %s · %s턴", fname(S.faction), tostring(num(S.turn, "?")))
 	L[#L+1] = string.format("재정 %s (수입 %s, 순 %s) · 영토 %s · 필드군 %s · 총군대 %s",
 		tostring(num(S.treasury,"?")), tostring(num(S.income,"?")),
-		((num(S.net,0) >= 0) and ("+"..num(S.net,0)) or tostring(S.net)),
+		(S.net == nil and "?" or ((S.net >= 0) and ("+"..S.net) or tostring(S.net))),
 		tostring(num(S.regions,"?")), tostring(num(S.generals,"?")), tostring(num(S.armies,"?")))
 	L[#L+1] = string.format("파생: 군대밀도 %.2f · 재정버퍼 %s · 국경적 %d(%s) · 원거리전 %d · 비적대이웃 %d",
 		D.density, buffer_str, D.immediate, wars, D.distant, D.others)
@@ -628,7 +668,12 @@ local function build_briefing(S, D, cand, prof)
 		local us = {}; for _, u in ipairs(S.province.unrest) do us[#us+1] = region_disp(u.region) .. "(" .. u.po .. ")" end
 		L[#L+1] = "🏛 공공질서: " .. table.concat(us, ", ")
 	end
-	if S.snowball then L[#L+1] = string.format("🌩 스노우볼: %s(영토 %d)", fname(S.snowball.key), S.snowball.regions) end
+	if S.province and S.province.corruption then L[#L+1] = string.format("☣ 타락: %s %s %d%%", region_disp(S.province.corruption.region), S.province.corruption.label, math.floor(S.province.corruption.value)) end
+	if S.snowball then
+		local g = S.rival_growth
+		local mark = (S.snowball.dominant and ",압도" or "") .. ((g and g.growth) and string.format(",%d턴%+d", g.dt, g.growth) or "")
+		L[#L+1] = string.format("🌩 최강라이벌: %s(영토 %d%s)", fname(S.snowball.key), S.snowball.regions, mark)
+	end
 	if S.resource then L[#L+1] = string.format("⚙ 종족자원 %s: %d", S.resource.label, math.floor(S.resource.value)) end
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
@@ -725,9 +770,16 @@ local function build_prose(S, D, cand, prof)
 			P[#P+1] = string.format("위협 — %s 인근에 %s 야전군이 있으나 아군이 대응 가능한 위치입니다. 요격을 검토하세요.", region_disp(defo[1].region), fname(defo[1].faction))
 		end
 	end
-	-- 스노우볼 경계(⑥) — 압도적으로 큰 AI
+	-- 스노우볼 경계(⑥) — 압도적이거나 급성장 중인 AI
 	if S.snowball then
-		P[#P+1] = string.format("경계 — %s가 압도적으로 커졌습니다(영토 %d). 방치하면 손쓸 수 없습니다. 견제하거나 대항 동맹을 규합하세요.", fname(S.snowball.key), S.snowball.regions)
+		local g = S.rival_growth
+		local fastgrow = g and g.dt >= 2 and g.growth >= 3
+		if S.snowball.dominant then
+			local extra = fastgrow and string.format(" 게다가 최근 %d턴간 영토 +%d로 급성장 중입니다.", g.dt, g.growth) or ""
+			P[#P+1] = string.format("경계 — %s가 압도적으로 커졌습니다(영토 %d).%s 방치하면 손쓸 수 없습니다. 견제하거나 대항 동맹을 규합하세요.", fname(S.snowball.key), S.snowball.regions, extra)
+		elseif fastgrow then
+			P[#P+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%d로 급성장 중입니다(현재 %d). 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, g.growth, S.snowball.regions)
+		end
 	end
 	-- 추세 한마디
 	if S.trend then
@@ -742,7 +794,8 @@ local function build_prose(S, D, cand, prof)
 	if cand[1] then
 		local r1 = cand[1].reasons[1]
 		if r1 and r1 ~= "" then
-			P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), tostring(r1))
+			r1 = (tostring(r1):gsub(" — ", ", "))   -- 템플릿의 —와 근거 안의 — 중복(이중대시) 방지
+			P[#P+1] = string.format("무엇보다 %s%s %s — %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score), r1)
 		else
 			P[#P+1] = string.format("무엇보다 %s%s %s.", cand[1].label, josa(cand[1].label, "이", "가"), urgency(cand[1].score))
 		end
@@ -787,6 +840,11 @@ local function build_prose(S, D, cand, prof)
 			P[#P+1] = string.format("내정 주의 — %s의 공공질서가 %d로 낮습니다. 방치하면 반란으로 이어집니다.", region_disp(worst.region), worst.po)
 		end
 	end
+	-- 적대 타락(④) — 타락 활용 종족은 gather 단계에서 이미 스킵됨
+	if S.province and S.province.corruption then
+		local c = S.province.corruption
+		P[#P+1] = string.format("타락 주의 — %s에 %s 타락이 %d%%입니다. 통제·수입에 악영향이니 정화를 고려하세요.", region_disp(c.region), c.label, math.floor(c.value))
+	end
 	-- 종족 메커니즘(①) — 팩션 고유 자원(현재 값 + 종족별 프레이밍/긴급)
 	if S.resource then
 		P[#P+1] = string.format("%s %d — %s.", S.resource.label, math.floor(S.resource.value), S.resource.note)
@@ -806,7 +864,7 @@ local function build_prose(S, D, cand, prof)
 end
 
 -- ── 턴별 추세 (io 스냅샷 비교) ───────────────────────────────────────
--- 각 줄: faction|turn|treasury|regions|armies|income
+-- 각 줄: faction|turn|treasury|regions|armies|income|rival_key|rival_regions (8필드; 세션 로드시 초기화되어 혼합 없음)
 local function read_history()
 	local list = {}
 	pcall(function()
@@ -814,10 +872,11 @@ local function read_history()
 		local fh = io.open(HISTORY_PATH, "r")
 		if not fh then return end
 		for line in fh:lines() do
-			local fac, t, tr, rg, ar, inc = line:match("([^|]*)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)")
+			local fac, t, tr, rg, ar, inc, rk, rr = line:match("([^|]*)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|([^|]*)|(%-?%d+)")
 			if fac then
 				list[#list + 1] = { faction = fac, turn = tonumber(t), treasury = tonumber(tr),
-					regions = tonumber(rg), armies = tonumber(ar), income = tonumber(inc) }
+					regions = tonumber(rg), armies = tonumber(ar), income = tonumber(inc),
+					rival_key = (rk ~= "" and rk ~= "-") and rk or nil, rival_regions = tonumber(rr) }
 			end
 		end
 		fh:close()
@@ -841,6 +900,22 @@ local function compute_trend(S, hist)
 		income   = num(S.income, 0)   - (prev.income or 0) }
 end
 
+-- 최강 라이벌 성장률(⑥) — 히스토리에서 같은 라이벌의 가장 이른 기록 vs 현재 크기.
+local function compute_rival_growth(S, hist)
+	if not S.snowball then return nil end
+	local key = S.snowball.key
+	local earliest = nil
+	for _, h in ipairs(hist) do
+		if h.rival_key == key and h.rival_regions and h.turn then
+			if (not earliest) or h.turn < earliest.turn then earliest = h end
+		end
+	end
+	if not earliest then return nil end
+	local dt = num(S.turn, 0) - earliest.turn
+	if dt <= 0 then return nil end
+	return { dt = dt, growth = num(S.snowball.regions, 0) - num(earliest.rival_regions, 0) }
+end
+
 -- 현재 턴 스냅샷 기록(같은 팩션·턴 갱신, 최근 12줄 유지).
 local function record_snapshot(S, hist)
 	pcall(function()
@@ -850,13 +925,15 @@ local function record_snapshot(S, hist)
 			if not (h.faction == S.faction and h.turn == num(S.turn, 0)) then kept[#kept + 1] = h end
 		end
 		kept[#kept + 1] = { faction = S.faction, turn = num(S.turn, 0), treasury = num(S.treasury, 0),
-			regions = num(S.regions, 0), armies = num(S.generals, 0), income = num(S.income, 0) }
+			regions = num(S.regions, 0), armies = num(S.generals, 0), income = num(S.income, 0),
+			rival_key = (S.snowball and S.snowball.key) or "-", rival_regions = (S.snowball and S.snowball.regions) or 0 }
 		while #kept > 12 do table.remove(kept, 1) end
 		local fh = io.open(HISTORY_PATH, "w")
 		if not fh then return end
 		for _, h in ipairs(kept) do
-			fh:write(string.format("%s|%d|%d|%d|%d|%d\n", tostring(h.faction), h.turn or 0,
-				h.treasury or 0, h.regions or 0, h.armies or 0, h.income or 0))
+			fh:write(string.format("%s|%d|%d|%d|%d|%d|%s|%d\n", tostring(h.faction), h.turn or 0,
+				h.treasury or 0, h.regions or 0, h.armies or 0, h.income or 0,
+				tostring(h.rival_key or "-"), h.rival_regions or 0))
 		end
 		fh:close()
 	end)
@@ -976,6 +1053,7 @@ local function run_advisor()
 		S.resource = gather_resource(prof)                 -- 종족 고유 자원(①)
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
+		S.rival_growth = compute_rival_growth(S, hist)   -- ⑥ 라이벌 성장률
 		local D, cand = analyze(S, prof)
 		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 구조화 블록
 		local prose = build_prose(S, D, cand, prof)        -- 자연어 산문
