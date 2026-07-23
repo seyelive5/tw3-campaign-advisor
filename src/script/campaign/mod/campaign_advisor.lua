@@ -13,10 +13,13 @@
   이 두뇌의 "구조화 결과"는 Phase3에서 LLM에 넘겨 자연어화할 것.
 =============================================================================]]
 
-local PROOF_PATH      = "C:/Users/veria/tw3_advisor_proof.txt"
-local HISTORY_PATH    = "C:/Users/veria/tw3_advisor_history.txt"   -- 턴별 스냅샷(추세 계산)
 local BUTTON_ID       = "advisor_recommend_button"
 local BUTTON_TEMPLATE = "ui/templates/round_medium_button"
+
+-- 디버그 파일: true일 때만 기록(기본 off — 배포판은 유저 디스크에 파일 안 남김).
+-- 평소 로그는 out()(게임 스크립트 로그)로만. 파일명은 상대경로(개인 절대경로 제거).
+local DEBUG_FILE = false
+local PROOF_PATH = "tw3_advisor_debug.txt"
 
 -- CA 실측 시드 상수
 local SEED = {
@@ -25,20 +28,22 @@ local SEED = {
 	buffer_target = 5,                -- 흑자시 목표 재정버퍼(턴)
 }
 
--- out() + (io 가능하면) 파일 기록. 둘 다 pcall 보호.
+-- out()으로 스크립트 로그 기록. DEBUG_FILE일 때만 파일도. 둘 다 pcall 보호.
 local function proof(msg, append)
 	pcall(function() out("[CAMPAIGN_ADVISOR] " .. msg) end)
-	pcall(function()
-		if io and io.open then
-			local f = io.open(PROOF_PATH, append and "a" or "w")
-			if f then f:write(msg .. "\n"); f:close() end
-		end
-	end)
+	if DEBUG_FILE then
+		pcall(function()
+			if io and io.open then
+				local f = io.open(PROOF_PATH, append and "a" or "w")
+				if f then f:write(msg .. "\n"); f:close() end
+			end
+		end)
+	end
 end
 
 proof("STEP5(2a) 파일 로드됨 (NewSession/top-level).", false)
--- 세션(캠페인)마다 추세 히스토리 초기화 → 캠페인 간 오염 방지.
-pcall(function() if io and io.open then local h = io.open(HISTORY_PATH, "w"); if h then h:close() end end end)
+-- 히스토리는 cm:set_saved_value(세이브 귀속)로 저장 → 파일 wipe 불필요.
+--   새 캠페인=빈 값이라 캠페인 간 오염 자동 방지 + 세이브/로드 지속.
 
 local g_done  = false
 local g_click = 0
@@ -863,15 +868,15 @@ local function build_prose(S, D, cand, prof)
 	return table.concat(P, "\n")   -- 문장별 줄바꿈(툴팁 표시 안정)
 end
 
--- ── 턴별 추세 (io 스냅샷 비교) ───────────────────────────────────────
--- 각 줄: faction|turn|treasury|regions|armies|income|rival_key|rival_regions (8필드; 세션 로드시 초기화되어 혼합 없음)
+-- ── 턴별 추세 (세이브값 스냅샷 비교) ─────────────────────────────────
+-- cm:set_saved_value("advisor_history", 문자열)에 저장(세이브 귀속 → 로드 지속, 캠페인 간 격리).
+-- 각 줄: faction|turn|treasury|regions|armies|income|rival_key|rival_regions (8필드).
 local function read_history()
 	local list = {}
 	pcall(function()
-		if not (io and io.open) then return end
-		local fh = io.open(HISTORY_PATH, "r")
-		if not fh then return end
-		for line in fh:lines() do
+		local raw = cm:get_saved_value("advisor_history")
+		if type(raw) ~= "string" then return end
+		for line in raw:gmatch("[^\n]+") do
 			local fac, t, tr, rg, ar, inc, rk, rr = line:match("([^|]*)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|(%-?%d+)|([^|]*)|(%-?%d+)")
 			if fac then
 				list[#list + 1] = { faction = fac, turn = tonumber(t), treasury = tonumber(tr),
@@ -879,7 +884,6 @@ local function read_history()
 					rival_key = (rk ~= "" and rk ~= "-") and rk or nil, rival_regions = tonumber(rr) }
 			end
 		end
-		fh:close()
 	end)
 	return list
 end
@@ -919,7 +923,7 @@ end
 -- 현재 턴 스냅샷 기록(같은 팩션·턴 갱신, 최근 12줄 유지).
 local function record_snapshot(S, hist)
 	pcall(function()
-		if not (io and io.open) or not S.faction then return end
+		if not S.faction then return end
 		local kept = {}
 		for _, h in ipairs(hist) do
 			if not (h.faction == S.faction and h.turn == num(S.turn, 0)) then kept[#kept + 1] = h end
@@ -928,14 +932,13 @@ local function record_snapshot(S, hist)
 			regions = num(S.regions, 0), armies = num(S.generals, 0), income = num(S.income, 0),
 			rival_key = (S.snowball and S.snowball.key) or "-", rival_regions = (S.snowball and S.snowball.regions) or 0 }
 		while #kept > 12 do table.remove(kept, 1) end
-		local fh = io.open(HISTORY_PATH, "w")
-		if not fh then return end
+		local lines = {}
 		for _, h in ipairs(kept) do
-			fh:write(string.format("%s|%d|%d|%d|%d|%d|%s|%d\n", tostring(h.faction), h.turn or 0,
+			lines[#lines + 1] = string.format("%s|%d|%d|%d|%d|%d|%s|%d", tostring(h.faction), h.turn or 0,
 				h.treasury or 0, h.regions or 0, h.armies or 0, h.income or 0,
-				tostring(h.rival_key or "-"), h.rival_regions or 0))
+				tostring(h.rival_key or "-"), h.rival_regions or 0)
 		end
-		fh:close()
+		cm:set_saved_value("advisor_history", table.concat(lines, "\n"))
 	end)
 end
 
