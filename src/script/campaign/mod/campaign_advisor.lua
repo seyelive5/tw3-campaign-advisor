@@ -16,10 +16,11 @@
 local BUTTON_ID       = "advisor_recommend_button"
 local BUTTON_TEMPLATE = "ui/templates/round_medium_button"
 
--- 디버그 파일: true일 때만 기록(기본 off — 배포판은 유저 디스크에 파일 안 남김).
--- 평소 로그는 out()(게임 스크립트 로그)로만. 파일명은 상대경로(개인 절대경로 제거).
-local DEBUG_FILE = false
-local PROOF_PATH = "tw3_advisor_debug.txt"
+-- 디버그 파일: ★개발·검증 중에는 true(프루프 파일로 계산 내역 전부 확인).
+--   배포 직전 단계(F5)에서만 false로 내리면 유저 디스크에 파일 안 남김.
+--   경로는 개발자(veria) 기준; 배포 시엔 off라 무관.
+local DEBUG_FILE = true
+local PROOF_PATH = "C:/Users/veria/tw3_advisor_proof.txt"
 
 -- CA 실측 시드 상수
 local SEED = {
@@ -1057,6 +1058,10 @@ local function run_advisor()
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
 		S.rival_growth = compute_rival_growth(S, hist)   -- ⑥ 라이벌 성장률
+		proof(string.format("[디버그] 세이브값 히스토리 %d행 · 추세 %s · 최강라이벌 %s · 종족자원 %s",
+			#hist, S.trend and "O" or "X(첫턴/미축적)",
+			S.snowball and tostring(S.snowball.key) or "없음",
+			S.resource and tostring(S.resource.label) or "없음(미커버 종족)"), true)
 		local D, cand = analyze(S, prof)
 		proof(build_briefing(S, D, cand, prof), true)      -- 파일: 구조화 블록
 		local prose = build_prose(S, D, cand, prof)        -- 자연어 산문
