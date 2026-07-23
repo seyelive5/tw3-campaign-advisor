@@ -1119,3 +1119,20 @@ function campaign_advisor()
 	create_advisor_button()
 	proof("2a campaign_advisor() 준비 완료 — 버튼 클릭 시 전략 브리핑 생성.", true)
 end
+
+-- ── 오프라인 테스트 export (게임에선 완전 무시) ──────────────────────
+-- 하니스(test/run_brain_tests.lua)가 dofile 전에 ADVISOR_TEST_EXPORTS=true를
+-- 설정하면 순수 함수들을 노출. 인게임에선 전역이 nil이라 이 블록은 no-op.
+if ADVISOR_TEST_EXPORTS then
+	CA_TEST = {
+		num = num, clamp = clamp, sev = sev, urgency = urgency,
+		has_batchim = has_batchim, josa = josa,
+		fname = fname, region_disp = region_disp, first_names = first_names,
+		get_profile = get_profile,
+		analyze = analyze, overall = overall, diagnose = diagnose,
+		build_briefing = build_briefing, build_prose = build_prose,
+		read_history = read_history, compute_trend = compute_trend,
+		compute_rival_growth = compute_rival_growth, record_snapshot = record_snapshot,
+		gather_resource = gather_resource,
+	}
+end
