@@ -849,7 +849,8 @@ local function build_prose(S, D, cand, prof)
 	if S.resource then
 		local vtxt = S.resource.max and string.format("%d/%d", math.floor(S.resource.value), S.resource.max)
 			or tostring(math.floor(S.resource.value))
-		local line = string.format("%s %s — %s.", S.resource.label, vtxt, S.resource.note)
+		local note = (tostring(S.resource.note):gsub(" — ", ", "))   -- 템플릿 대시와 이중 방지
+		local line = string.format("%s %s — %s.", S.resource.label, vtxt, note)
 		if S.resource.urgent then U[#U+1] = line else N[#N+1] = line end
 	end
 	-- N: 추세
