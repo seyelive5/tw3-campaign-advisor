@@ -504,6 +504,56 @@ do
 		ok(not has(prose_v, "확장 기회 — "), "중복 억제: 커버된 확장줄 제거")
 		ok(has(prose_v, "다음 수: "), "계획이 다음 수로 흡수")
 	end
+
+	-- v33: 기후 게이트·이동력 넛지·원거리 비중·자원 max 표시
+	do
+		-- 기후: 적합 우선 선택 / 부적합뿐이면 약탈 권고
+		local Sc1 = baseS{
+			threats = { sieges = {}, threatened = {}, my_field = {},
+				targets = { { region = "reg_swamp", owner = "eX", my_border = "b", near = true, suit = "suitability_verypoor" },
+					{ region = "reg_meadow", owner = "eX", my_border = "b", near = true, suit = "suitability_good" } } } }
+		local _, _, _, pc1 = run(Sc1)
+		ok(has(pc1, "확장 기회") and has(pc1, "Meadow"), "기후: 적합지 우선", pc1:match("확장[^\n]*"))
+		ok(not has(pc1, "확장 주의"), "기후: 적합지 있으면 경고 없음")
+		local Sc2 = baseS{
+			threats = { sieges = {}, threatened = {}, my_field = {},
+				targets = { { region = "bad_land", owner = "eX", my_border = "b", near = true, suit = "suitability_verypoor" } } } }
+		local _, _, _, pc2 = run(Sc2)
+		ok(has(pc2, "확장 주의") and has(pc2, "약탈"), "기후: 부적합뿐 → 약탈 권고")
+		-- 다음 수 기후 선호(계획)
+		local Sc3 = baseS{ border_enemies = { "foe" }, war_set = { foe = true },
+			threats = { sieges = {}, threatened = {}, my_field = {},
+				targets = { { region = "reg_swamp", owner = "foe", my_border = "b", near = true, suit = "suitability_verypoor" },
+					{ region = "reg_meadow", owner = "foe", my_border = "b", near = true, suit = "suitability_good" } } },
+			strat = { enemy = { foe = { regions = 3 } }, provinces = {}, armies = {}, endgame = { active = {} } } }
+		Sc3.plan = T.plan_generate(Sc3, "소모전")
+		local bc3 = table.concat(T.plan_prose_lines(Sc3), "\n")
+		ok(has(bc3, "다음 수: Meadow 공략") and not has(bc3, "기후 부적합"), "계획 다음 수: 적합지 선호", bc3:match("다음 수[^\n]*"))
+		Sc3.threats.targets = { { region = "reg_swamp", owner = "foe", my_border = "b", near = true, suit = "suitability_verypoor" } }
+		local bc4 = table.concat(T.plan_prose_lines(Sc3), "\n")
+		ok(has(bc4, "기후 부적합 — 약탈 권장"), "계획 다음 수: 부적합 주석")
+		-- 이동력 넛지: 혼합 AP에서만
+		local Sm = baseS{ strat = { enemy = {}, provinces = {}, endgame = { active = {} },
+			armies = { { units = 19, art = 1, ranged = 5, combat = 18, ap = 10 },
+				{ units = 15, art = 0, ranged = 4, combat = 14, ap = 100, in_open = true } } } }
+		local _, _, _, pm = run(Sm)
+		ok(has(pm, "이동력 — ") and has(pm, "1개"), "이동력: 혼합 AP → 미이동 1 넛지")
+		Sm.strat.armies[1].ap = 100
+		local _, _, _, pm2 = run(Sm)
+		ok(not has(pm2, "이동력 — "), "이동력: 턴 초(전원 만땅) → 무음")
+		-- 원거리 비중: 일반 종족 경고 / 근접 종족 제외
+		local Sr1 = baseS{ threats = { sieges = {}, threatened = {}, my_field = {}, targets = {} },
+			strat = { enemy = {}, provinces = {}, endgame = { active = {} },
+				armies = { { name = "주력", units = 16, art = 0, ranged = 1, combat = 15, avg = 95 } } } }
+		Sr1.plan = T.plan_generate(Sr1, "안정")
+		ok(has(table.concat(T.plan_prose_lines(Sr1), "\n"), "원거리 7%"), "원거리 비중 경고(1/15=7%)")
+		Sr1.melee_race = true
+		ok(not has(table.concat(T.plan_prose_lines(Sr1), "\n"), "원거리"), "근접 종족 → 원거리 경고 제외")
+		-- 자원 max 비율 표시
+		local Sx = baseS{ resource = { label = "제국 권위", value = 12, max = 100, note = "낮음", urgent = true } }
+		local _, _, _, px = run(Sx)
+		ok(has(px, "제국 권위 12/100"), "자원 값/max 표시")
+	end
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

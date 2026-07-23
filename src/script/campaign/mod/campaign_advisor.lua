@@ -243,7 +243,9 @@ local function gather_threats(f, war_set, border_enemies)
 						end)
 						if ok and war_set[ok] then
 							tgt_seen[anm] = true
-							T.targets[#T.targets + 1] = { region = anm, owner = ok, my_border = nm }
+							local suit = nil   -- 기후 적합성(v33) — 부적합 땅 점령 추천 방지
+							pcall(function() suit = f:get_climate_suitability(areg:settlement():get_climate()) end)
+							T.targets[#T.targets + 1] = { region = anm, owner = ok, my_border = nm, suit = suit }
 						end
 					end
 				end
@@ -843,9 +845,11 @@ local function build_prose(S, D, cand, prof)
 			N[#N+1] = string.format("내정 주의 — %s의 공공질서가 %d로 낮습니다. 방치하면 반란으로 이어집니다.", region_disp(worst.region), worst.po)
 		end
 	end
-	-- U/N: 종족 자원(①) — 긴급 임계면 승격
+	-- U/N: 종족 자원(①) — 긴급 임계면 승격. max(상한, db 실측)가 있으면 비율 표시.
 	if S.resource then
-		local line = string.format("%s %d — %s.", S.resource.label, math.floor(S.resource.value), S.resource.note)
+		local vtxt = S.resource.max and string.format("%d/%d", math.floor(S.resource.value), S.resource.max)
+			or tostring(math.floor(S.resource.value))
+		local line = string.format("%s %s — %s.", S.resource.label, vtxt, S.resource.note)
 		if S.resource.urgent then U[#U+1] = line else N[#N+1] = line end
 	end
 	-- N: 추세
@@ -869,13 +873,33 @@ local function build_prose(S, D, cand, prof)
 			break
 		end
 	end
-	-- N: 확장 기회(모듈3) — 계획 미커버 대상만(계획의 '다음 수'와 재방송 방지)
+	-- N: 확장 기회(모듈3) — 계획 미커버 대상만 + 기후 게이트(v33: 적합 우선, 부적합뿐이면 약탈 권고)
 	if S.threats and S.threats.targets then
+		local pick, fallback
 		for _, t in ipairs(S.threats.targets) do
 			if t.near and not covered[t.owner] then
-				N[#N+1] = string.format("확장 기회 — 내 군대 인근의 공격 가능 정착지: %s(%s). 여력이 되면 공략을 검토하세요.", region_disp(t.region), fname(t.owner))
-				break
+				if t.suit ~= "suitability_verypoor" then pick = t; break
+				elseif not fallback then fallback = t end
 			end
+		end
+		local nt = pick or fallback
+		if nt then
+			if nt.suit == "suitability_verypoor" then
+				N[#N+1] = string.format("확장 주의 — 인근 공격 가능지 %s(%s)는 기후 부적합입니다. 점령보다 약탈·파괴를 권합니다.", region_disp(nt.region), fname(nt.owner))
+			else
+				N[#N+1] = string.format("확장 기회 — 내 군대 인근의 공격 가능 정착지: %s(%s). 여력이 되면 공략을 검토하세요.", region_disp(nt.region), fname(nt.owner))
+			end
+		end
+	end
+	-- N: 턴 마무리 점검(v33) — 일부만 움직였고 야전 대기 미이동 군단이 남았을 때만(턴 초 소음 방지)
+	if S.strat and S.strat.armies and #S.strat.armies >= 2 then
+		local spent, idle = false, 0
+		for _, a in ipairs(S.strat.armies) do
+			if a.ap and a.ap <= 20 then spent = true end
+			if a.ap and a.ap >= 60 and a.in_open then idle = idle + 1 end
+		end
+		if spent and idle > 0 then
+			N[#N+1] = string.format("이동력 — 야전 대기 중인 미이동 군단 %d개. 턴 종료 전 활용하세요.", idle)
 		end
 	end
 	-- N: 외교(모듈4) — 계획과의 일관성(제거=모순 문구, 화친 단계=무언 흡수)
@@ -1098,20 +1122,33 @@ local function collect_strategic(S)
 				local okmf = false
 				pcall(function() okmf = mf:has_general() and not mf:is_armed_citizenry() end)
 				if okmf then
-					local a = { units = 0, art = 0 }
+					local a = { units = 0, art = 0, ranged = 0, combat = 0 }
 					pcall(function()
 						local ul = mf:unit_list(); local un = ul:num_items()
 						a.units = un
 						local sum, cnt = 0, 0
 						for j = 0, math.min(un, 25) - 1 do
 							local u = ul:item_at(j)
-							pcall(function() if u:unit_class() == "art_fld" then a.art = a.art + 1 end end)
+							pcall(function()   -- 완전 어휘(unit_class db 실측 18종) 기반 분류
+								local ucl = u:unit_class()
+								if ucl == "art_fld" or ucl == "art_fix" or ucl == "art_siege" then a.art = a.art + 1 end
+								if ucl == "inf_mis" or ucl == "cav_mis" or ucl == "art_fld" or ucl == "art_fix" or ucl == "art_siege" then a.ranged = a.ranged + 1 end
+								if ucl ~= "com" then a.combat = a.combat + 1 end
+							end)
 							pcall(function()
 								local p = u:percentage_proportion_of_full_strength()
 								if p then sum = sum + p; cnt = cnt + 1 end
 							end)
 						end
 						if cnt > 0 then a.avg = math.floor(sum / cnt + 0.5) end
+					end)
+					pcall(function()   -- 이동력·야전 대기(턴 마무리 점검용)
+						local ch = mf:general_character()
+						pcall(function() a.ap = ch:action_points_remaining_percent() end)
+						pcall(function()
+							a.in_open = ch:has_region() and (not ch:is_at_sea()) and (not ch:in_settlement())
+								and (not ch:is_besieging()) and (not ch:is_embedded_in_military_force())
+						end)
 					end)
 					pcall(function()
 						local loc = common.get_localised_string(mf:general_character():get_forename())
@@ -1354,10 +1391,17 @@ function plan_prose_lines(S)
 			end
 			line = string.format("%s %s 제거 — 잔여 %d정착지(시작 %d)%s%s.", NUMS[i], fname(s.key), s.last or 0, s.base or s.last or 0, trend, rl)
 			if S.threats and S.threats.targets then
+				local nx, nxf
 				for _, t in ipairs(S.threats.targets) do
 					if t.owner == s.key and t.near then
-						line = line .. string.format(" 다음 수: %s 공략.", region_disp(t.region)); break
+						if t.suit ~= "suitability_verypoor" then nx = t; break
+						elseif not nxf then nxf = t end
 					end
+				end
+				local pt = nx or nxf
+				if pt then
+					line = line .. string.format(" 다음 수: %s 공략%s.", region_disp(pt.region),
+						(pt.suit == "suitability_verypoor") and "(기후 부적합 — 약탈 권장)" or "")
 				end
 			end
 			-- 시너지: 이 팩션이 미완 속주의 소유주면 — 제거가 곧 속주 완성(일석이조)
@@ -1419,6 +1463,24 @@ function plan_prose_lines(S)
 		end
 		if art_total == 0 and S.threats and S.threats.targets and #S.threats.targets > 0 then
 			parts[#parts + 1] = "야포 0문 — 공성 장기화 주의"
+		end
+		-- 원거리 비중(v33, 완전 어휘) — 근접 정체성 종족은 제외
+		if not S.melee_race then
+			local big
+			for _, a in ipairs(ST.armies) do
+				local n = (a.combat and a.combat > 0) and a.combat or a.units
+				if n and n >= 10 then
+					local bn = big and (((big.combat and big.combat > 0) and big.combat) or big.units) or -1
+					if n > bn then big = a end
+				end
+			end
+			if big then
+				local bn = ((big.combat and big.combat > 0) and big.combat) or big.units
+				local rr = (big.ranged or 0) / math.max(1, bn)
+				if rr < 0.15 then
+					parts[#parts + 1] = string.format("%s 군단 원거리 %d%% — 사격 지원 보강 고려", big.name or "주력", math.floor(rr * 100 + 0.5))
+				end
+			end
 		end
 		if #parts > 0 then L[#L + 1] = "군단 점검: " .. table.concat(parts, " · ") .. "." end
 	end
@@ -1526,7 +1588,7 @@ local function gather_resource(prof)
 				else
 					local note, urgent = r.note, false
 					if r.low_thresh and v <= r.low_thresh and r.low_note then note = r.low_note; urgent = true end
-					outv = { label = r.label, value = v, note = note, urgent = urgent }
+					outv = { label = r.label, value = v, max = r.max, note = note, urgent = urgent }
 					return   -- 첫 유효 자원만
 				end
 			end
@@ -1543,6 +1605,7 @@ local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
+		S.melee_race = (prof and prof.melee) or false      -- v33: 근접 정체성 종족(원거리 경고 제외)
 		S.resource = gather_resource(prof)                 -- 종족 고유 자원(①)
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
