@@ -310,6 +310,52 @@ local function gather_diplomacy(f, war_set, border_enemies, border_others)
 	return D
 end
 
+-- ── 속주 내부(④) — 공공질서 위기 감지 ────────────────────────────────
+-- API(바닐라 실측): region:public_order() (음수=불안, <=-50 반란 임박). 속주 단위로 최악만 유지.
+local function gather_province_issues(f)
+	local PV = { unrest = {} }
+	pcall(function()
+		local regions = f:region_list(); local rn = regions:num_items()
+		local seen = {}
+		for i = 0, math.min(rn, 50) - 1 do
+			local reg = regions:item_at(i)
+			local po = nil
+			pcall(function() po = reg:public_order() end)
+			if po and po <= -15 then
+				local pn = reg:name(); pcall(function() pn = reg:province_name() end)
+				local a = seen[pn]
+				if not a then a = { region = reg:name(), po = po }; seen[pn] = a; PV.unrest[#PV.unrest + 1] = a
+				elseif po < a.po then a.po = po; a.region = reg:name() end
+			end
+		end
+	end)
+	return PV
+end
+
+-- ── 스노우볼 감시(⑥) — 내가 만난 비동맹 세력 중 압도적으로 큰 팩션 ────
+-- API(바닐라 실측): faction:factions_met(), faction:military_allies_with(obj), region_list():num_items().
+-- 성장률 추적(히스토리) 없이 정적 '우세' 감지 — 런어웨이 AI 조기 경고.
+local function gather_snowball(f, my_regions)
+	local top = nil
+	pcall(function()
+		local met = f:factions_met(); local n = met:num_items()
+		for i = 0, math.min(n, 60) - 1 do
+			local of = met:item_at(i)
+			if of and not of:is_null_interface() then
+				local allied = false
+				pcall(function() allied = f:military_allies_with(of) end)
+				if not allied then
+					local rc = 0
+					pcall(function() rc = of:region_list():num_items() end)
+					if (not top) or rc > top.regions then top = { key = of:name(), regions = rc } end
+				end
+			end
+		end
+	end)
+	if top and top.regions >= math.max(12, num(my_regions, 0) * 2) then return top end
+	return nil
+end
+
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
 local function gather_state()
 	local f = nil
@@ -363,6 +409,10 @@ local function gather_state()
 	S.threats = gather_threats(f, war_set, S.border_enemies)
 	-- 외교 기회(모듈4): 성사 가능한 화친/동맹
 	S.diplo = gather_diplomacy(f, war_set, S.border_enemies, S.border_others)
+	-- 속주 내부(④): 공공질서 위기
+	S.province = gather_province_issues(f)
+	-- 스노우볼 감시(⑥): 압도적으로 큰 비동맹 세력
+	S.snowball = gather_snowball(f, S.regions)
 	return S
 end
 
@@ -418,6 +468,8 @@ local function analyze(S, prof)
 		if nsiege > 0 then sc = sc + 45 + nsiege * 10; rs[#rs+1] = string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege) end
 		if nundef > 0 then sc = sc + 20 + nundef * 8; rs[#rs+1] = string.format("무방비 위협 %d곳(근처 아군 없음)", nundef) end
 		if nthreat > nundef then sc = sc + 8; rs[#rs+1] = string.format("적 야전군이 %d개 지역 위협", nthreat) end
+		local nunrest = (S.province and #S.province.unrest) or 0
+		if nunrest > 0 then sc = sc + 8 + nunrest * 5; rs[#rs+1] = string.format("공공질서 위기 속주 %d곳(반란 위험)", nunrest) end
 		if immediate > 0 then sc = sc + immediate * 15; rs[#rs+1] = string.format("국경 접한 적 %d개", immediate) end
 		if regions > 0 and density < 0.5 then sc = sc + 25; rs[#rs+1] = "군대 밀도 매우 낮음 — 방어 취약" end
 		if S.strong_enemy and num(S.strong_enemy_r, 0) > num(S.my_regions, 0) then
@@ -497,6 +549,35 @@ local function overall(S, D)
 	return table.concat(p, " · ")
 end
 
+-- ── 전략 국면 진단(②) — 기존 지표로 상위 archetype 한 줄 ─────────────
+-- 관찰의 나열이 아니라 "지금 어떤 국면인가"라는 상위 판단을 우선순위대로 하나 고른다.
+local function diagnose(S, D)
+	local regions = num(S.regions, 0)
+	local field   = num(S.generals, 0)
+	local nsiege  = (S.threats and #S.threats.sieges) or 0
+	local buffer  = D.buffer or 999
+	if nsiege > 0 or D.immediate >= 3 then
+		return { label = "궁지", note = "포위·다전선으로 수세에 몰렸습니다. 전선을 줄이고 핵심 영토 사수에 집중하세요" }
+	end
+	if regions >= 5 and field > 0 and (regions / field) >= 4 and D.immediate >= 2 then
+		return { label = "과확장", note = "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요" }
+	end
+	if D.deficit and buffer < 4 then
+		return { label = "재정 위기", note = "적자로 곧 자금이 바닥납니다. 군대 감축이나 수입 확충이 시급합니다" }
+	end
+	if D.immediate == 0 and D.net > 0 then
+		if buffer > 12 then return { label = "성장 정체", note = "평온하나 금고만 쌓였습니다. 재투자·확장으로 우위를 굴리세요" } end
+		return { label = "성장기", note = "평온+흑자, 우위를 확보할 적기입니다. 경제와 영토를 키우세요" }
+	end
+	if num(S.turn, 99) <= 10 then
+		return { label = "초반 정착", note = "기반을 다지는 시기입니다. 인접 약체 흡수와 경제 기틀을 우선하세요" }
+	end
+	if D.wars > 0 then
+		return { label = "소모전", note = "전쟁이 이어지나 전선은 관리되고 있습니다. 결정적 지점에 전력을 모으세요" }
+	end
+	return { label = "안정", note = "큰 위협은 없습니다. 다음 목표를 정해 주도적으로 움직이세요" }
+end
+
 -- ── 브리핑 조립(다양한 오프너 + 랭킹 조언) ──────────────────────────
 local OPENERS = { "전략 브리핑", "현황 분석", "참모 보고", "정세 판단" }
 
@@ -520,6 +601,7 @@ local function build_briefing(S, D, cand, prof)
 			S.trend.dt, S.trend.treasury, S.trend.regions, S.trend.income)
 	end
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
+	do local dg = diagnose(S, D); if dg then L[#L+1] = "◆ 국면: " .. dg.label .. " — " .. dg.note end end
 	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0) then
 		local parts = {}
 		if #S.threats.sieges > 0 then
@@ -542,6 +624,12 @@ local function build_briefing(S, D, cand, prof)
 		if #S.diplo.ally > 0 then dp[#dp+1] = "동맹가능=" .. first_names(S.diplo.ally, 3) end
 		L[#L+1] = "🤝 외교: " .. table.concat(dp, " · ")
 	end
+	if S.province and #S.province.unrest > 0 then
+		local us = {}; for _, u in ipairs(S.province.unrest) do us[#us+1] = region_disp(u.region) .. "(" .. u.po .. ")" end
+		L[#L+1] = "🏛 공공질서: " .. table.concat(us, ", ")
+	end
+	if S.snowball then L[#L+1] = string.format("🌩 스노우볼: %s(영토 %d)", fname(S.snowball.key), S.snowball.regions) end
+	if S.resource then L[#L+1] = string.format("⚙ 종족자원 %s: %d", S.resource.label, math.floor(S.resource.value)) end
 	if prof and prof.race and prof.race ~= "(일반)" then
 		L[#L+1] = string.format("🏰 %s — %s", prof.race, tostring(prof.identity or ""))
 	end
@@ -599,6 +687,11 @@ local function build_prose(S, D, cand, prof)
 	local race = (prof and prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
 	local rot = function(t) return t[(g_click - 1) % #t + 1] end
 	local P = {}
+	-- 전략 국면(②) — 최상위 판단을 맨 앞에
+	do
+		local dg = diagnose(S, D)
+		if dg then P[#P+1] = string.format("【국면 · %s】 %s.", dg.label, dg.note) end
+	end
 	-- 정세 도입
 	local eco = D.deficit and "재정은 적자라 주의가 필요하고"
 		or (D.net > 0 and string.format("재정은 순 +%d로 흑자이며", num(S.net, 0)) or "재정은 대체로 균형이고")
@@ -631,6 +724,10 @@ local function build_prose(S, D, cand, prof)
 		elseif #defo > 0 then
 			P[#P+1] = string.format("위협 — %s 인근에 %s 야전군이 있으나 아군이 대응 가능한 위치입니다. 요격을 검토하세요.", region_disp(defo[1].region), fname(defo[1].faction))
 		end
+	end
+	-- 스노우볼 경계(⑥) — 압도적으로 큰 AI
+	if S.snowball then
+		P[#P+1] = string.format("경계 — %s가 압도적으로 커졌습니다(영토 %d). 방치하면 손쓸 수 없습니다. 견제하거나 대항 동맹을 규합하세요.", fname(S.snowball.key), S.snowball.regions)
 	end
 	-- 추세 한마디
 	if S.trend then
@@ -679,6 +776,20 @@ local function build_prose(S, D, cand, prof)
 	-- 유휴 자원(모듈2) — 연구 미지정
 	if S.research_idle == true then
 		P[#P+1] = "연구가 지정되지 않았습니다. 기술을 골라 착수하세요."
+	end
+	-- 속주 내부(④) — 공공질서 위기(최악 속주)
+	if S.province and #S.province.unrest > 0 then
+		local worst = S.province.unrest[1]
+		for _, u in ipairs(S.province.unrest) do if u.po < worst.po then worst = u end end
+		if worst.po <= -50 then
+			P[#P+1] = string.format("반란 위험 — %s의 공공질서가 %d로 붕괴 직전입니다. 주둔군 강화나 억압으로 진정시키세요.", region_disp(worst.region), worst.po)
+		else
+			P[#P+1] = string.format("내정 주의 — %s의 공공질서가 %d로 낮습니다. 방치하면 반란으로 이어집니다.", region_disp(worst.region), worst.po)
+		end
+	end
+	-- 종족 메커니즘(①) — 팩션 고유 자원(현재 값 + 종족별 프레이밍/긴급)
+	if S.resource then
+		P[#P+1] = string.format("%s %d — %s.", S.resource.label, math.floor(S.resource.value), S.resource.note)
 	end
 	-- 진영 특색 (팁 우선; 시그니처는 이미 후보로 등장할 수 있어 중복 회피. 오프셋으로 다른 팁 선택)
 	if prof and prof.tips and #prof.tips > 0 then
@@ -828,11 +939,41 @@ local function show_panel(prose, turn)
 	end)
 end
 
+-- ── 종족 고유 자원(①) — pooled_resource_manager로 팩션 메커니즘 조회 ──
+-- API(바닐라 실측): faction:pooled_resource_manager():resource("키"):value(), :is_null_interface().
+-- 키는 프로필 resources에 정의(za_faction_profiles). 임계치 아는 것만 긴급 플래그, 나머지는 값+프레이밍.
+local function gather_resource(prof)
+	if not (prof and prof.resources and #prof.resources > 0) then return nil end
+	local outv = nil
+	pcall(function()
+		local f = cm:get_local_faction(true)
+		if not f then return end
+		local prm = f:pooled_resource_manager()
+		if not prm then return end
+		for _, r in ipairs(prof.resources) do
+			local res = nil
+			pcall(function() res = prm:resource(r.key) end)
+			if res and not res:is_null_interface() then
+				local v = nil
+				pcall(function() v = res:value() end)
+				if v then
+					local note, urgent = r.note, false
+					if r.low_thresh and v <= r.low_thresh and r.low_note then note = r.low_note; urgent = true end
+					outv = { label = r.label, value = v, note = note, urgent = urgent }
+					return   -- 첫 유효 자원만
+				end
+			end
+		end
+	end)
+	return outv
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
+		S.resource = gather_resource(prof)                 -- 종족 고유 자원(①)
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
 		local D, cand = analyze(S, prof)
