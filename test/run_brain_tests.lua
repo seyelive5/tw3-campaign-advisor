@@ -744,6 +744,33 @@ do
 	ok(not has(p2, "조짐도"), "보간: 산문에도 무병기")
 end
 
+-- ══ 13. v39 — 아콘(WoC) 검증 후속: 영토0 거점·보강/기회 구분 ═══════
+log("== 13. v39 영토0·보강/기회 ==")
+do
+	-- 영토 0 + 점령 가능 → 계획 ① 거점 확보(아콘 시작 상황)
+	local S = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1 }
+	local pl = T.plan_generate(S, "초반 정착")
+	ok(pl.steps[1] and pl.steps[1].kind == "posture" and pl.steps[1].key == "settle", "영토0: settle 계획", pl.steps[1] and tostring(pl.steps[1].key))
+	S.plan = pl
+	ok(has(table.concat(T.plan_prose_lines(S), "\n"), "거점 확보 — 아직 정착지가 없습니다"), "영토0: 거점 확보 문구")
+	-- 호드(점령 불가)는 settle 제외
+	local Sh = baseS{ regions = 0, my_regions = 0, can_capture = false }
+	local ph = T.plan_generate(Sh, "초반 정착")
+	ok(not (ph.steps[1] and ph.steps[1].key == "settle"), "호드: settle 제외", ph.steps[1] and tostring(ph.steps[1].key))
+	-- 종합 줄: 영토 0이면 '군대 얇음' 미표기
+	local _, _, _, _, brief = run(S)
+	ok(not has(brief, "군대 얇음"), "영토0: '군대 얇음' 오진 제거")
+end
+do
+	-- 보강/기회 구분(v38 랭킹 부작용 수정): 문제형 근거 우선, 기회뿐이면 라벨 전환
+	local S = baseS{}   -- 버퍼 3.0 → 문제형(버퍼) 존재하나 기여 1위는 평온(12>6)
+	local _, _, _, prose = run(S)
+	ok(has(prose, "보강 — 경제: 재정 버퍼 3.0턴"), "보강: 문제형 근거 우선", prose:match("보강[^\n]*") or prose:match("기회[^\n]*"))
+	local S2 = baseS{ treasury = 40000, income = 3000, net = 2000 }   -- 버퍼 13.3 → 문제형 없음
+	local _, _, _, p2 = run(S2)
+	ok(has(p2, "기회 — 경제: 국경 평온, 성장 적기"), "기회: 문제형 없으면 라벨 전환", p2:match("기회[^\n]*") or p2:match("보강[^\n]*"))
+end
+
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
 local report = table.concat(R.lines, "\n")
 local fh = real_open(ROOT .. "/test/out_brain_report.txt", "w")

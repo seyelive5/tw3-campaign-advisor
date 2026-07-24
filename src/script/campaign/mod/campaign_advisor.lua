@@ -501,6 +501,7 @@ local function gather_state()
 	S.armies       = LN(function() return f:military_force_list() end)  -- 수비대 포함
 	S.generals     = V(function() return f:num_generals() end)          -- ≈ 필드군
 	S.research_idle= V(function() return f:research_queue_idle() end)
+	S.can_capture  = V(function() return f:is_allowed_to_capture_territory() end)   -- v39: 호드(false)는 정착 조언 제외
 
 	-- 전쟁 집합 + 국경 인접 → 즉각/먼 위협, 비적대 이웃 구분
 	local war_set, war_count = key_set(function() return f:factions_at_war_with() end, 60)
@@ -551,12 +552,16 @@ end
 -- IAUS-lite(v38, 문서1 1순위 축소 채택): 근거를 기여 점수와 함께 기록 → 기여 순 출력.
 --   (전면 곱셈형 IAUS는 정직하게 보류 — v32 이후 패널 조언은 계획 엔진이 주도해
 --    analyze 재구성의 가시 효과가 작음. 근거 랭킹 + 응답곡선 스무딩만 채택.)
-local function R(rs, pts, text) rs[#rs + 1] = { p = pts, t = text } end
+-- issue=true면 '문제형' 근거(부족·위협) — 보강 줄이 기회 설명 대신 이것을 우선(v39).
+local function R(rs, pts, text, issue) rs[#rs + 1] = { p = pts, t = text, issue = issue } end
 local function finish_reasons(rs)
 	table.sort(rs, function(a, b) return a.p > b.p end)
-	local out = {}
-	for _, r in ipairs(rs) do out[#out + 1] = r.t end
-	return out
+	local out, issue1 = {}, nil
+	for _, r in ipairs(rs) do
+		out[#out + 1] = r.t
+		if r.issue and not issue1 then issue1 = r.t end
+	end
+	return out, issue1
 end
 
 -- ── 파생지표 + 2축 스코어링 ──────────────────────────────────────────
@@ -594,15 +599,16 @@ local function analyze(S, prof)
 	-- 경제 (건설/수입기반)
 	do
 		local sc, rs = SEED.cons_base, {}
-		if deficit then sc = sc + 30; R(rs, 30, "적자 — 수입 기반 확충 시급") end
+		if deficit then sc = sc + 30; R(rs, 30, "적자 — 수입 기반 확충 시급", true) end
 		if buffer < SEED.buffer_target then
 			local p = math.floor(15 * (SEED.buffer_target - buffer) / SEED.buffer_target + 0.5)   -- 응답곡선(v38)
-			if p > 0 then sc = sc + p; R(rs, p, string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target)) end
+			if p > 0 then sc = sc + p; R(rs, p, string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target), true) end
 		end
-		if buffer > 15 and not deficit then sc = sc + 10; R(rs, 10, string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer)) end
+		if buffer > 15 and not deficit then sc = sc + 10; R(rs, 10, string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer), true) end
 		if immediate == 0 then sc = sc + 12; R(rs, 12, "국경 평온 — 성장 적기") end
-		if immediate >= 2 then local p = -immediate * 4; sc = sc + p; R(rs, p, "다전선 압박으로 건설 우선순위 하락") end
-		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) }
+		if immediate >= 2 then local p = -immediate * 4; sc = sc + p; R(rs, p, "다전선 압박으로 건설 우선순위 하락", true) end
+		local rr, ri = finish_reasons(rs)
+		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = rr, issue = ri }
 	end
 	-- 방어 (전선 방어) — 포위/위협 정착지 + 국경 접한 적 중심
 	do
@@ -614,18 +620,21 @@ local function analyze(S, prof)
 			nthreat = #Tt.threatened
 			for _, a in ipairs(Tt.threatened) do if not a.defended then nundef = nundef + 1 end end
 		end
-		if nsiege > 0 then local p = 45 + nsiege * 10; sc = sc + p; R(rs, p, string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege)) end
-		if nundef > 0 then local p = 20 + nundef * 8; sc = sc + p; R(rs, p, string.format("무방비 위협 %d곳(근처 아군 없음)", nundef)) end
-		if nthreat > nundef then sc = sc + 8; R(rs, 8, string.format("적 야전군이 %d개 지역 위협", nthreat)) end
+		if nsiege > 0 then local p = 45 + nsiege * 10; sc = sc + p; R(rs, p, string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege), true) end
+		if nundef > 0 then local p = 20 + nundef * 8; sc = sc + p; R(rs, p, string.format("무방비 위협 %d곳(근처 아군 없음)", nundef), true) end
+		if nthreat > nundef then sc = sc + 8; R(rs, 8, string.format("적 야전군이 %d개 지역 위협", nthreat), true) end
 		local nunrest = (S.province and #S.province.unrest) or 0
-		if nunrest > 0 then local p = 8 + nunrest * 5; sc = sc + p; R(rs, p, string.format("공공질서 위기 속주 %d곳(반란 위험)", nunrest)) end
-		if immediate > 0 then local p = immediate * 15; sc = sc + p; R(rs, p, string.format("국경 접한 적 %d개", immediate)) end
-		if regions > 0 and density < 0.5 then sc = sc + 25; R(rs, 25, "군대 밀도 매우 낮음 — 방어 취약") end
+		if nunrest > 0 then local p = 8 + nunrest * 5; sc = sc + p; R(rs, p, string.format("공공질서 위기 속주 %d곳(반란 위험)", nunrest), true) end
+		if immediate > 0 then local p = immediate * 15; sc = sc + p; R(rs, p, string.format("국경 접한 적 %d개", immediate), true) end
+		if regions > 0 and density < 0.5 then sc = sc + 25; R(rs, 25, "군대 밀도 매우 낮음 — 방어 취약", true) end
 		if S.strong_enemy and num(S.strong_enemy_r, 0) > num(S.my_regions, 0) then
 			sc = sc + 15
-			R(rs, 15, string.format("%s(영토 %d)가 우리(%d)보다 커 방어 강화 필요", fname(S.strong_enemy), num(S.strong_enemy_r, 0), num(S.my_regions, 0)))
+			R(rs, 15, string.format("%s(영토 %d)가 우리(%d)보다 커 방어 강화 필요", fname(S.strong_enemy), num(S.strong_enemy_r, 0), num(S.my_regions, 0)), true)
 		end
-		if sc > 0 then cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) } end
+		if sc > 0 then
+			local rr, ri = finish_reasons(rs)
+			cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = rr, issue = ri }
+		end
 	end
 	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재. 약한 이웃을 표적으로 지목.
 	if immediate == 0 and net > 0 and buffer >= SEED.buffer_target and others > 0 then
@@ -652,7 +661,7 @@ local function analyze(S, prof)
 	end
 	-- 기술 (연구)
 	if S.research_idle == true then
-		cand[#cand+1] = { key = "tech", label = "기술", score = 45, reasons = { "연구가 미가동 상태 — 즉시 착수 권장" } }
+		cand[#cand+1] = { key = "tech", label = "기술", score = 45, reasons = { "연구가 미가동 상태 — 즉시 착수 권장" }, issue = "연구가 미가동 상태 — 즉시 착수 권장" }
 	end
 	-- 외교 (동맹/화친) — 다전선 + 성사 가능한 화친/동맹(모듈4)
 	do
@@ -694,7 +703,7 @@ local function overall(S, D)
 	elseif D.immediate == 1 then p[#p+1] = "국경 교전"
 	elseif D.wars > 0 then p[#p+1] = "원거리 전쟁만"
 	else p[#p+1] = "국경 평온" end
-	if D.density < 1 then p[#p+1] = "군대 얇음" end
+	if D.density < 1 and num(S.regions, 0) > 0 then p[#p+1] = "군대 얇음" end   -- v39: 영토 0은 얇음이 아님
 	return table.concat(p, " · ")
 end
 
@@ -1024,13 +1033,14 @@ local function build_prose(S, D, cand, prof)
 		N[#N+1] = string.format("최근 %d턴 사이 영토가 %s.", S.trend.dt, (S.trend.regions > 0) and "늘었습니다" or "줄었습니다")
 	end
 	-- N: 보강 1건 — 계획(군사/확장)·전용줄(외교)과 겹치지 않는 축만.
-	--   경제/기술은 항상 후보, 방어는 긴급(U)이 비었을 때만(긴급 줄과 중복 방지). 구 최우선/차선 블록 대체.
+	--   경제/기술은 항상 후보, 방어는 긴급(U)이 비었을 때만(긴급 줄과 중복 방지).
+	--   v39: 문제형(issue) 근거 우선 — 기회 설명뿐이면 라벨을 '기회'로(보강≠기회 구분).
 	for i = 1, #cand do
 		local c = cand[i]
 		if c.key == "economy" or c.key == "tech" or (c.key == "defense" and #U == 0) then
-			local r1 = c.reasons and c.reasons[1]
+			local r1 = c.issue or (c.reasons and c.reasons[1])
 			if r1 and r1 ~= "" then
-				N[#N+1] = string.format("보강 — %s: %s.", c.label, (tostring(r1):gsub(" — ", ", ")))
+				N[#N+1] = string.format("%s — %s: %s.", c.issue and "보강" or "기회", c.label, (tostring(r1):gsub(" — ", ", ")))
 			end
 			break
 		end
@@ -1465,6 +1475,10 @@ end
 -- 단계: ①군사(peace 또는 elim) ②속주 완성 ③대비/자세. 최대 3단계.
 local function plan_generate(S, dglabel)
 	local steps, ST = {}, S.strat or {}
+	-- v39: 영토 0(호드 제외) = 무엇보다 첫 거점 — 시작 공성/식민 유도(아콘 등 정착지 없는 출발)
+	if num(S.regions, 0) == 0 and S.can_capture ~= false then
+		steps[#steps + 1] = { kind = "posture", key = "settle", base = 0, last = 0, created = num(S.turn, 0) }
+	end
 	-- 생존 국면(궁지/재정위기/과확장): 화친 가능한 적 중 '가장 큰' 상대와 강화 → 최대 위협부터 전선 정리
 	local survival = (dglabel == "궁지" or dglabel == "재정 위기" or dglabel == "과확장")
 	local peace_key = nil
@@ -1676,6 +1690,7 @@ function plan_prose_lines(S)
 				consolidate = "내실 — 확장을 멈추고 통합·방어를 정비",
 				expand = "확장 준비 — 약한 이웃 방면으로 다음 전쟁을 설계",
 				tech = "내실 — 기술·경제 축적으로 다음 도약을 준비",
+				settle = "거점 확보 — 아직 정착지가 없습니다. 첫 정착지를 점령해 기반부터 만드세요",
 			}
 			line = NUMS[i] .. " " .. (m[s.key] or "자세 정비") .. "."
 		end
