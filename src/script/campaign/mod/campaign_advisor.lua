@@ -548,6 +548,17 @@ local function gather_state()
 	return S
 end
 
+-- IAUS-lite(v38, 문서1 1순위 축소 채택): 근거를 기여 점수와 함께 기록 → 기여 순 출력.
+--   (전면 곱셈형 IAUS는 정직하게 보류 — v32 이후 패널 조언은 계획 엔진이 주도해
+--    analyze 재구성의 가시 효과가 작음. 근거 랭킹 + 응답곡선 스무딩만 채택.)
+local function R(rs, pts, text) rs[#rs + 1] = { p = pts, t = text } end
+local function finish_reasons(rs)
+	table.sort(rs, function(a, b) return a.p > b.p end)
+	local out = {}
+	for _, r in ipairs(rs) do out[#out + 1] = r.t end
+	return out
+end
+
 -- ── 파생지표 + 2축 스코어링 ──────────────────────────────────────────
 local function analyze(S, prof)
 	local regions  = num(S.regions, 0)
@@ -570,22 +581,28 @@ local function analyze(S, prof)
 	-- 군사 (모집/증원) — 즉각 위협을 먼 전쟁보다 크게 가중
 	do
 		local sc, rs = SEED.army_base, {}
-		if immediate > 0 then sc = sc + immediate * 12; rs[#rs+1] = string.format("국경 접한 적 %d개(즉각 위협)", immediate) end
-		if distant  > 0 then sc = sc + distant * 3;   rs[#rs+1] = string.format("국경 밖 전쟁 %d개", distant) end
-		if regions > 0 and density < 1 then sc = sc + 20; rs[#rs+1] = string.format("영토 %d 대비 필드군 %s 얇음", regions, nro(field)) end
-		if deficit then sc = sc - 15; rs[#rs+1] = "적자라 모집 여력 제한" end
-		if net > 0 then sc = sc + 8; rs[#rs+1] = string.format("순수입 +%s 모집 여력", nro(net)) end
-		cand[#cand+1] = { key = "military", label = "군사", score = clamp(sc, 0, 100), reasons = rs }
+		if immediate > 0 then local p = immediate * 12; sc = sc + p; R(rs, p, string.format("국경 접한 적 %d개(즉각 위협)", immediate)) end
+		if distant  > 0 then local p = distant * 3; sc = sc + p; R(rs, p, string.format("국경 밖 전쟁 %d개", distant)) end
+		if regions > 0 and density < 1 then
+			local p = math.floor(20 * (1 - density) + 0.5)   -- 응답곡선(v38): 얇을수록 비례(계단 제거)
+			if p > 0 then sc = sc + p; R(rs, p, string.format("영토 %d 대비 필드군 %s 얇음", regions, nro(field))) end
+		end
+		if deficit then sc = sc - 15; R(rs, -15, "적자라 모집 여력 제한") end
+		if net > 0 then sc = sc + 8; R(rs, 8, string.format("순수입 +%s 모집 여력", nro(net))) end
+		cand[#cand+1] = { key = "military", label = "군사", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) }
 	end
 	-- 경제 (건설/수입기반)
 	do
 		local sc, rs = SEED.cons_base, {}
-		if deficit then sc = sc + 30; rs[#rs+1] = "적자 — 수입 기반 확충 시급" end
-		if buffer < SEED.buffer_target then sc = sc + 15; rs[#rs+1] = string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target) end
-		if buffer > 15 and not deficit then sc = sc + 10; rs[#rs+1] = string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer) end
-		if immediate == 0 then sc = sc + 12; rs[#rs+1] = "국경 평온 — 성장 적기" end
-		if immediate >= 2 then sc = sc - immediate * 4; rs[#rs+1] = "다전선 압박으로 건설 우선순위 하락" end
-		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = rs }
+		if deficit then sc = sc + 30; R(rs, 30, "적자 — 수입 기반 확충 시급") end
+		if buffer < SEED.buffer_target then
+			local p = math.floor(15 * (SEED.buffer_target - buffer) / SEED.buffer_target + 0.5)   -- 응답곡선(v38)
+			if p > 0 then sc = sc + p; R(rs, p, string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target)) end
+		end
+		if buffer > 15 and not deficit then sc = sc + 10; R(rs, 10, string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer)) end
+		if immediate == 0 then sc = sc + 12; R(rs, 12, "국경 평온 — 성장 적기") end
+		if immediate >= 2 then local p = -immediate * 4; sc = sc + p; R(rs, p, "다전선 압박으로 건설 우선순위 하락") end
+		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) }
 	end
 	-- 방어 (전선 방어) — 포위/위협 정착지 + 국경 접한 적 중심
 	do
@@ -597,18 +614,18 @@ local function analyze(S, prof)
 			nthreat = #Tt.threatened
 			for _, a in ipairs(Tt.threatened) do if not a.defended then nundef = nundef + 1 end end
 		end
-		if nsiege > 0 then sc = sc + 45 + nsiege * 10; rs[#rs+1] = string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege) end
-		if nundef > 0 then sc = sc + 20 + nundef * 8; rs[#rs+1] = string.format("무방비 위협 %d곳(근처 아군 없음)", nundef) end
-		if nthreat > nundef then sc = sc + 8; rs[#rs+1] = string.format("적 야전군이 %d개 지역 위협", nthreat) end
+		if nsiege > 0 then local p = 45 + nsiege * 10; sc = sc + p; R(rs, p, string.format("정착지 %d곳 포위 중 — 즉시 구원", nsiege)) end
+		if nundef > 0 then local p = 20 + nundef * 8; sc = sc + p; R(rs, p, string.format("무방비 위협 %d곳(근처 아군 없음)", nundef)) end
+		if nthreat > nundef then sc = sc + 8; R(rs, 8, string.format("적 야전군이 %d개 지역 위협", nthreat)) end
 		local nunrest = (S.province and #S.province.unrest) or 0
-		if nunrest > 0 then sc = sc + 8 + nunrest * 5; rs[#rs+1] = string.format("공공질서 위기 속주 %d곳(반란 위험)", nunrest) end
-		if immediate > 0 then sc = sc + immediate * 15; rs[#rs+1] = string.format("국경 접한 적 %d개", immediate) end
-		if regions > 0 and density < 0.5 then sc = sc + 25; rs[#rs+1] = "군대 밀도 매우 낮음 — 방어 취약" end
+		if nunrest > 0 then local p = 8 + nunrest * 5; sc = sc + p; R(rs, p, string.format("공공질서 위기 속주 %d곳(반란 위험)", nunrest)) end
+		if immediate > 0 then local p = immediate * 15; sc = sc + p; R(rs, p, string.format("국경 접한 적 %d개", immediate)) end
+		if regions > 0 and density < 0.5 then sc = sc + 25; R(rs, 25, "군대 밀도 매우 낮음 — 방어 취약") end
 		if S.strong_enemy and num(S.strong_enemy_r, 0) > num(S.my_regions, 0) then
 			sc = sc + 15
-			rs[#rs+1] = string.format("%s(영토 %d)가 우리(%d)보다 커 방어 강화 필요", fname(S.strong_enemy), num(S.strong_enemy_r, 0), num(S.my_regions, 0))
+			R(rs, 15, string.format("%s(영토 %d)가 우리(%d)보다 커 방어 강화 필요", fname(S.strong_enemy), num(S.strong_enemy_r, 0), num(S.my_regions, 0)))
 		end
-		if sc > 0 then cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = rs } end
+		if sc > 0 then cand[#cand+1] = { key = "defense", label = "방어", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) } end
 	end
 	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재. 약한 이웃을 표적으로 지목.
 	if immediate == 0 and net > 0 and buffer >= SEED.buffer_target and others > 0 then
@@ -640,10 +657,10 @@ local function analyze(S, prof)
 	-- 외교 (동맹/화친) — 다전선 + 성사 가능한 화친/동맹(모듈4)
 	do
 		local sc, rs = 0, {}
-		if wars >= 2 then sc = sc + 30 + wars * 6; rs[#rs + 1] = string.format("%d개 세력과 동시 전쟁 — 전선 축소 검토", wars) end
-		if S.diplo and #S.diplo.peace > 0 then sc = sc + 22; rs[#rs + 1] = string.format("화친 성사 가능: %s", first_names(S.diplo.peace, 2)) end
-		if S.diplo and #S.diplo.ally > 0 then sc = sc + 12; rs[#rs + 1] = string.format("동맹 성사 가능: %s", first_names(S.diplo.ally, 2)) end
-		if sc > 0 then cand[#cand + 1] = { key = "diplomacy", label = "외교", score = clamp(sc, 0, 100), reasons = rs } end
+		if wars >= 2 then local p = 30 + wars * 6; sc = sc + p; R(rs, p, string.format("%d개 세력과 동시 전쟁 — 전선 축소 검토", wars)) end
+		if S.diplo and #S.diplo.peace > 0 then sc = sc + 22; R(rs, 22, string.format("화친 성사 가능: %s", first_names(S.diplo.peace, 2))) end
+		if S.diplo and #S.diplo.ally > 0 then sc = sc + 12; R(rs, 12, string.format("동맹 성사 가능: %s", first_names(S.diplo.ally, 2))) end
+		if sc > 0 then cand[#cand + 1] = { key = "diplomacy", label = "외교", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) } end
 	end
 
 	-- 진영 시그니처 액션(프로필 정의). 같은 차원 후보가 이미 있으면 흡수(라벨 승격+근거 추가+가중),
@@ -681,33 +698,44 @@ local function overall(S, D)
 	return table.concat(p, " · ")
 end
 
--- ── 전략 국면 진단(②) — 기존 지표로 상위 archetype 한 줄 ─────────────
--- 관찰의 나열이 아니라 "지금 어떤 국면인가"라는 상위 판단을 우선순위대로 하나 고른다.
+-- ── 전략 국면 진단(② → v38 보간) — if-else 사다리 대신 소속도(membership) ──
+-- 체스 tapered eval 유비(문서1): 국면별 소속도를 연속값으로 매겨 최댓값을 주 국면으로,
+-- 0.45 이상의 차점을 "조짐"으로 병기 → 경계에서 조언이 급변하지 않고 복합 국면 표현.
+-- 소속도는 구 사다리 조건을 연속화한 것(회귀 테스트 6종으로 라벨 보존 검증).
 local function diagnose(S, D)
 	local regions = num(S.regions, 0)
 	local field   = num(S.generals, 0)
 	local nsiege  = (S.threats and #S.threats.sieges) or 0
 	local buffer  = D.buffer or 999
-	if nsiege > 0 or D.immediate >= 3 then
-		return { label = "궁지", note = "포위·다전선으로 수세에 몰렸습니다. 전선을 줄이고 핵심 영토 사수에 집중하세요" }
+	local turn    = num(S.turn, 99)
+	local A = {}
+	local function put(label, m, note) if m > 0 then A[#A + 1] = { label = label, m = m, note = note } end end
+	local mj = 0
+	if nsiege > 0 then mj = 1 elseif D.immediate >= 3 then mj = 0.8 elseif D.immediate == 2 then mj = 0.35 end
+	put("궁지", mj, "포위·다전선으로 수세에 몰렸습니다. 전선을 줄이고 핵심 영토 사수에 집중하세요")
+	if regions >= 5 and field > 0 then
+		local mo = clamp((regions / field - 3) / 2, 0, 1) * ((D.immediate >= 2) and 1 or 0.4)
+		put("과확장", mo, "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요")
 	end
-	if regions >= 5 and field > 0 and (regions / field) >= 4 and D.immediate >= 2 then
-		return { label = "과확장", note = "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요" }
-	end
-	if D.deficit and buffer < 4 then
-		return { label = "재정 위기", note = "적자로 곧 자금이 바닥납니다. 군대 감축이나 수입 확충이 시급합니다" }
+	if D.deficit then
+		put("재정 위기", clamp((4 - buffer) / 3, 0, 1), "적자로 곧 자금이 바닥납니다. 군대 감축이나 수입 확충이 시급합니다")
 	end
 	if D.immediate == 0 and D.net > 0 then
-		if buffer > 12 then return { label = "성장 정체", note = "평온하나 금고만 쌓였습니다. 재투자·확장으로 우위를 굴리세요" } end
-		return { label = "성장기", note = "평온+흑자, 우위를 확보할 적기입니다. 경제와 영토를 키우세요" }
+		put("성장 정체", clamp((buffer - 12) / 8, 0, 1), "평온하나 금고만 쌓였습니다. 재투자·확장으로 우위를 굴리세요")
+		put("성장기", 0.6, "평온+흑자, 우위를 확보할 적기입니다. 경제와 영토를 키우세요")
 	end
-	if num(S.turn, 99) <= 10 then
-		return { label = "초반 정착", note = "기반을 다지는 시기입니다. 인접 약체 흡수와 경제 기틀을 우선하세요" }
-	end
+	put("초반 정착", clamp((11 - turn) / 10, 0, 1), "기반을 다지는 시기입니다. 인접 약체 흡수와 경제 기틀을 우선하세요")
 	if D.wars > 0 then
-		return { label = "소모전", note = "전쟁이 이어지나 전선은 관리되고 있습니다. 결정적 지점에 전력을 모으세요" }
+		put("소모전", 0.4, "전쟁이 이어지나 전선은 관리되고 있습니다. 결정적 지점에 전력을 모으세요")
 	end
-	return { label = "안정", note = "큰 위협은 없습니다. 다음 목표를 정해 주도적으로 움직이세요" }
+	put("안정", 0.2, "큰 위협은 없습니다. 다음 목표를 정해 주도적으로 움직이세요")
+	table.sort(A, function(a, b) return a.m > b.m end)
+	local top = A[1]
+	local second = nil
+	if A[2] and A[2].m >= 0.45 and A[2].label ~= "안정" and A[2].label ~= "성장기" then
+		second = A[2].label
+	end
+	return { label = top.label, note = top.note, m = top.m, second = second }
 end
 
 -- ── 브리핑 조립(다양한 오프너 + 랭킹 조언) ──────────────────────────
@@ -732,9 +760,18 @@ local function build_briefing(S, D, cand, prof)
 		L[#L+1] = string.format("📈 추세(%d턴 전 대비): 재정 %+d · 영토 %+d · 수입 %+d",
 			S.trend.dt, S.trend.treasury, S.trend.regions, S.trend.income)
 	end
+	if S.proj then   -- v37 전방 투영(외삽)
+		local parts = { string.format("턴당 %+d(%s) → 3턴 뒤 국고 ~%d", math.floor(S.proj.rate + 0.5), S.proj.src, S.proj.t3) }
+		if S.proj.runway then parts[#parts+1] = string.format("고갈 ~%d턴", S.proj.runway) end
+		if S.proj.rival_cross then parts[#parts+1] = string.format("라이벌 2배 교차 ~%d턴", S.proj.rival_cross) end
+		L[#L+1] = "🔮 투영: " .. table.concat(parts, " · ")
+	end
 	L[#L+1] = "🩺 수집상태: " .. ((S.health and #S.health > 0) and ("실패=" .. table.concat(S.health, ",") .. " — 해당 영역 판단 보류") or "전 섹션 정상")
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
-	do local dg = diagnose(S, D); if dg then L[#L+1] = "◆ 국면: " .. dg.label .. " — " .. dg.note end end
+	do
+		local dg = diagnose(S, D)
+		if dg then L[#L+1] = "◆ 국면: " .. dg.label .. (dg.second and (" (겸 " .. dg.second .. ")") or "") .. " — " .. dg.note end
+	end
 	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0) then
 		local parts = {}
 		if #S.threats.sieges > 0 then
@@ -872,10 +909,15 @@ local function build_prose(S, D, cand, prof)
 	if S.plan then for _, st in ipairs(S.plan.steps or {}) do if st.key then covered[st.key] = true end end end
 	-- A: 전략 계획(2.0) — "앞으로 무엇을"의 직답
 	for _, l in ipairs(plan_prose_lines(S)) do A[#A+1] = l end
-	-- A: 전략 국면(②)
-	do
-		local dg = diagnose(S, D)
-		if dg then A[#A+1] = string.format("【국면 · %s】 %s.", dg.label, dg.note) end
+	-- A: 전략 국면(②) — v37: 재정위기면 활주로 외삽(몇 턴 뒤 고갈)을 수치로 덧붙임
+	local dg = diagnose(S, D)
+	if dg then
+		local extra = ""
+		if dg.label == "재정 위기" and S.proj and S.proj.runway then
+			extra = string.format(" 이 추세면 ~%d턴 내 고갈됩니다.", S.proj.runway)
+		end
+		local sec = dg.second and string.format(" %s 조짐도 겹쳐 있습니다.", dg.second) or ""
+		A[#A+1] = string.format("【국면 · %s】 %s.%s%s", dg.label, dg.note, extra, sec)
 	end
 	-- A: 정세 도입 — 절 병합(v35): 경제·수입추세·국경위협을 한 문장으로. 대조는 '이나' 한 번만(남발 금지).
 	local cls = {}
@@ -898,6 +940,10 @@ local function build_prose(S, D, cand, prof)
 	-- U: 데이터 신뢰성(v35 — 문서1 0순위): 수집 실패를 '평온'으로 위장하지 않는다.
 	if S.health and #S.health > 0 then
 		U[#U+1] = string.format("⚠ 데이터 — 이번 클릭에 %s 정보를 읽지 못했습니다. 해당 영역은 판단을 보류합니다(조용함≠안전).", table.concat(S.health, "·"))
+	end
+	-- U: 재정 활주로(v37 외삽) — 국면이 이미 재정위기로 말한 경우는 제외(중복 방지)
+	if S.proj and S.proj.runway and S.proj.runway <= 3 and (not dg or dg.label ~= "재정 위기") then
+		U[#U+1] = string.format("재정 — 이 추세면 약 %d턴 뒤 국고가 바닥납니다(턴당 %+d). 지출을 줄이거나 수입을 확보하세요.", S.proj.runway, math.floor(S.proj.rate + 0.5))
 	end
 	-- U/N: 위협(모듈1) — 포위·무방비=긴급. 방어된 위협은 계획 미커버 대상만(중복 억제).
 	if S.threats then
@@ -931,7 +977,8 @@ local function build_prose(S, D, cand, prof)
 			local extra = fastgrow and string.format(" 게다가 최근 %d턴간 영토 +%s 급성장 중입니다.", g.dt, nro(g.growth)) or ""
 			U[#U+1] = string.format("경계 — %s가 압도적으로 커졌습니다(영토 %d).%s 방치하면 손쓸 수 없습니다. 견제하거나 대항 동맹을 규합하세요.", fname(S.snowball.key), S.snowball.regions, extra)
 		elseif fastgrow then
-			N[#N+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%s 급성장 중입니다(현재 %d). 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, nro(g.growth), S.snowball.regions)
+			local cross = (S.proj and S.proj.rival_cross) and string.format(" 이 추세면 ~%d턴 뒤 우리의 2배 규모가 됩니다.", S.proj.rival_cross) or ""
+			N[#N+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%s 급성장 중입니다(현재 %d).%s 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, nro(g.growth), S.snowball.regions, cross)
 		end
 	end
 	-- N: 비전시 이웃 적대 스탠스(v36, CAI 실측) — 선전포고 조기 경보
@@ -1130,6 +1177,35 @@ local function compute_rival_growth(S, hist)
 	local dt = num(S.turn, 0) - earliest.turn
 	if dt <= 0 then return nil end
 	return { dt = dt, growth = num(S.snowball.regions, 0) - num(earliest.rival_regions, 0) }
+end
+
+-- ── 전방 투영(v37, 문서1 2순위) — 얕은 추세 외삽 ─────────────────────
+-- 게임 시뮬레이션이 아니라 '수집한 추세의 선형 외삽'. 정확한 예측이 아닌
+-- 방향 비교용 → 문구에 반드시 "이 추세면"을 붙여 외삽임을 정직하게 명시.
+local function project(S)
+	local P = {}
+	local g = num(S.treasury, 0)
+	-- 재정 턴당 변화: 히스토리 실측 우선(이벤트·유지비 변화 반영), 폴백=현재 순수입
+	local rate, src = num(S.net, 0), "순수입 기준"
+	if S.trend and S.trend.dt and S.trend.dt >= 1 then
+		rate = S.trend.treasury / S.trend.dt
+		src = string.format("최근 %d턴 실측", S.trend.dt)
+	end
+	P.rate, P.src = rate, src
+	P.t3 = math.floor(g + rate * 3 + 0.5)             -- 3턴 뒤 국고(외삽)
+	if rate < -1 then P.runway = math.floor(g / -rate) end   -- 활주로: 이 추세로 버티는 턴 수
+	-- 라이벌 2배 교차: 라이벌·내 영토 증가율로 "우리의 2배가 되는 시점" 외삽
+	if S.snowball and S.rival_growth and S.rival_growth.dt and S.rival_growth.dt >= 2 then
+		local rr = S.rival_growth.growth / S.rival_growth.dt
+		local mr = (S.trend and S.trend.dt and S.trend.dt >= 1) and (S.trend.regions / S.trend.dt) or 0
+		local my, rv = num(S.regions, 0), num(S.snowball.regions, 0)
+		local den = rr - 2 * mr
+		if den > 0.05 and rv < 2 * my then
+			local t = (2 * my - rv) / den
+			if t >= 1 and t <= 20 then P.rival_cross = math.ceil(t) end
+		end
+	end
+	return P
 end
 
 -- 현재 턴 스냅샷 기록(같은 팩션·턴 갱신, 최근 12줄 유지).
@@ -1538,7 +1614,16 @@ function plan_prose_lines(S)
 			-- v36: 적 즉시 군비(CAI 실측). 유닛 하나 값(<300)도 없으면 재건 불능 → 속전 신호
 			local wc = ST and ST.enemy and ST.enemy[s.key] and ST.enemy[s.key].war_chest
 			if type(wc) == "number" and wc < 300 then rl = rl .. " · 적 군비 고갈 — 몰아칠 때" end
-			line = string.format("%s %s 제거 — 잔여 %d정착지(시작 %d)%s%s.", NUMS[i], fname(s.key), s.last or 0, s.base or s.last or 0, trend, rl)
+			-- v37: 진행 속도 외삽 — 시작 이후 정착지 감소 속도로 완료 시점 추정
+			local eta = ""
+			if s.base and s.last and s.created and num(S.turn, 0) > s.created and s.base > s.last and s.last > 0 then
+				local pace = (s.base - s.last) / (num(S.turn, 0) - s.created)
+				if pace > 0 then
+					local t = math.ceil(s.last / pace)
+					if t <= 12 then eta = string.format(" 이 속도면 ~%d턴 내 정리.", t) end
+				end
+			end
+			line = string.format("%s %s 제거 — 잔여 %d정착지(시작 %d)%s%s.%s", NUMS[i], fname(s.key), s.last or 0, s.base or s.last or 0, trend, rl, eta)
 			if S.threats and S.threats.targets then
 				local nx, nxf
 				for _, t in ipairs(S.threats.targets) do
@@ -1820,6 +1905,7 @@ local function run_advisor()
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
 		S.rival_growth = compute_rival_growth(S, hist)   -- ⑥ 라이벌 성장률
+		S.proj = project(S)                              -- v37 전방 투영(외삽)
 		proof(string.format("[디버그] 세이브값 히스토리 %d행 · 추세 %s · 최강라이벌 %s · 종족자원 %s",
 			#hist, S.trend and "O" or "X(첫턴/미축적)",
 			S.snowball and tostring(S.snowball.key) or "없음",
@@ -1901,6 +1987,7 @@ if ADVISOR_TEST_EXPORTS then
 		build_briefing = build_briefing, build_prose = build_prose,
 		read_history = read_history, compute_trend = compute_trend,
 		compute_rival_growth = compute_rival_growth, record_snapshot = record_snapshot,
+		project = project,
 		gather_resource = gather_resource,
 		-- 전략 2.0(순수부)
 		plan_serialize = plan_serialize, plan_deserialize = plan_deserialize,

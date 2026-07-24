@@ -68,6 +68,7 @@ local function baseS(o)
 end
 local function run(S, prof)
 	prof = prof or T.get_profile(S)
+	S.proj = S.proj or T.project(S)   -- v37: 인게임 배선(run_advisor)과 동일
 	local D, cand = T.analyze(S, prof)
 	local dg = T.diagnose(S, D)
 	local prose = T.build_prose(S, D, cand, prof)
@@ -659,6 +660,88 @@ do
 	local Sq = baseS{ strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} }, hostile = {} } }
 	local _, _, _, pq = run(Sq)
 	ok(not has(pq, "적대시"), "CAI: 적대 없음 → 무언")
+end
+
+-- ══ 11. v37 — 전방 투영(얕은 외삽): 활주로·격멸 ETA·라이벌 교차 ═════
+log("== 11. v37 전방 투영 ==")
+do
+	-- project 순수 로직: 실측 추세 우선 / 폴백=순수입
+	local P1 = T.project({ treasury = 6000, net = -1500, turn = 20 })
+	ok(P1.runway == 4 and P1.t3 == 1500, "투영: 순수입 폴백(활주로 4턴, 3턴 뒤 1500)", P1.runway .. "/" .. P1.t3)
+	local P2 = T.project({ treasury = 6000, net = 100, turn = 20, trend = { dt = 2, treasury = -4000, regions = 0, income = 0 } })
+	ok(P2.rate == -2000 and P2.runway == 3, "투영: 실측 추세 우선(-2000/턴 → 활주로 3)", tostring(P2.rate))
+	ok(T.project({ treasury = 9000, net = 800, turn = 20 }).runway == nil, "투영: 흑자면 활주로 없음")
+	-- 라이벌 2배 교차: 라이벌 +2/턴, 나 +0/턴, 현재 라이벌 10 vs 나 8 → (16-10)/2 = 3턴
+	local P3 = T.project({ treasury = 9000, net = 800, turn = 20, regions = 8,
+		snowball = { key = "r", regions = 10 }, rival_growth = { dt = 2, growth = 4 },
+		trend = { dt = 2, treasury = 1600, regions = 0, income = 0 } })
+	ok(P3.rival_cross == 3, "투영: 라이벌 2배 교차 3턴", tostring(P3.rival_cross))
+	local P4 = T.project({ treasury = 9000, net = 800, turn = 20, regions = 8,
+		snowball = { key = "r", regions = 10 }, rival_growth = { dt = 2, growth = 0 },
+		trend = { dt = 2, treasury = 1600, regions = 2, income = 0 } })
+	ok(P4.rival_cross == nil, "투영: 내가 더 빠르면 교차 없음")
+end
+do  -- 산문: 재정위기 국면에 활주로 수치 부착
+	local S = baseS{ turn = 30, net = -800, losing = true, treasury = 2000, income = 1000 }
+	local _, _, _, prose = run(S)
+	ok(has(prose, "【국면 · 재정 위기】") and has(prose, "이 추세면 ~2턴 내 고갈됩니다"), "투영: 국면에 활주로 부착", prose:match("국면[^\n]*"))
+	ok(not has(prose, "재정 — 이 추세면"), "투영: 국면과 U줄 중복 없음")
+end
+do  -- 산문: 국면이 재정위기가 아닌데 활주로 짧음 → U 경고 (버퍼 넉넉·순손실 큼)
+	local S = baseS{ turn = 30, net = -1500, losing = true, treasury = 4000, income = 800,
+		war_count = 0, distant = 0 }
+	local _, _, _, prose = run(S)
+	ok(has(prose, "재정 — 이 추세면 약 2턴 뒤 국고가 바닥납니다"), "투영: 활주로 U 경고", prose:match("재정 — [^\n]*"))
+end
+do  -- 계획 ① 격멸 ETA: 시작4→잔여2, 2턴 경과 → 속도 1/턴 → ~2턴 내 정리
+	local S = baseS{ turn = 12, border_enemies = { "foe" }, war_set = { foe = true },
+		strat = { enemy = { foe = { regions = 2 } }, provinces = {}, armies = {}, endgame = { active = {} } } }
+	S.plan = { steps = { { kind = "elim", key = "foe", base = 4, last = 2, created = 10 } } }
+	local pl = table.concat(T.plan_prose_lines(S), "\n")
+	ok(has(pl, "이 속도면 ~2턴 내 정리"), "투영: 격멸 ETA", pl:match("①[^\n]*"))
+	S.plan.steps[1].created = 12   -- 방금 생성 → ETA 없음
+	ok(not has(table.concat(T.plan_prose_lines(S), "\n"), "이 속도면"), "투영: 생성 직후엔 ETA 무음")
+end
+do  -- 주시 줄에 교차 시점 부착
+	local S = baseS{ regions = 8, my_regions = 8,
+		snowball = { key = "wh_main_grn_greenskins", regions = 10, dominant = false },
+		rival_growth = { dt = 2, growth = 4 },
+		trend = { dt = 2, treasury = 1600, regions = 0, income = 0 } }
+	local _, _, _, prose = run(S)
+	ok(has(prose, "주시 — ") and has(prose, "~3턴 뒤 우리의 2배 규모"), "투영: 주시 줄 교차 부착", prose:match("주시[^\n]*"))
+end
+
+-- ══ 12. v38 — IAUS-lite(근거 기여 순) + 국면 보간(tapered) ══════════
+log("== 12. v38 근거 랭킹·국면 보간 ==")
+do
+	-- 근거 기여 순 정렬: 얇음(밀도0.25→+15) > 국경적1(+12) > 원거리2(+6)
+	local S = baseS{ immediate = 1, distant = 2, war_count = 3, generals = 1, regions = 4, my_regions = 4,
+		border_enemies = { "e" }, war_names = { "적" }, net = 0 }
+	local _, cand = run(S)
+	local mil
+	for _, c in ipairs(cand) do if c.key == "military" then mil = c end end
+	ok(mil and mil.reasons[1]:find("얇음") ~= nil and mil.reasons[2]:find("즉각 위협") ~= nil,
+		"IAUS: 근거 기여 순 정렬(얇음>국경적>원거리)", mil and table.concat(mil.reasons, " | "))
+	-- 응답곡선: 버퍼 3턴 → 경제 보너스 6(15×2/5) < 평온 12 → 근거 1위는 평온
+	local S2 = baseS{}   -- treasury 9000/income 3000 = 버퍼 3, immediate 0
+	local _, c2 = run(S2)
+	local eco
+	for _, c in ipairs(c2) do if c.key == "economy" then eco = c end end
+	ok(eco and eco.reasons[1] == "국경 평온 — 성장 적기", "IAUS: 응답곡선(얕은 버퍼<평온 기여)", eco and table.concat(eco.reasons, " | "))
+end
+do
+	-- 국면 보간: 포위+과확장 동시 → 궁지 주 국면 + 과확장 조짐 병기
+	local S = baseS{ turn = 40, regions = 8, my_regions = 8, generals = 2, immediate = 2, war_count = 2,
+		border_enemies = { "a", "b" }, war_names = { "A", "B" },
+		threats = { sieges = { "sg" }, threatened = {}, targets = {}, my_field = {} } }
+	local _, _, dg, prose = run(S)
+	ok(dg and dg.label == "궁지" and dg.second == "과확장", "보간: 궁지+과확장 복합", (dg and dg.label or "?") .. "/" .. tostring(dg and dg.second))
+	ok(has(prose, "과확장 조짐도 겹쳐 있습니다"), "보간: 복합 표기(산문)", prose:match("국면[^\n]*"))
+	-- 약한 차점(0.45 미만)은 병기하지 않음
+	local S2 = baseS{ turn = 30, net = -800, losing = true, treasury = 2000, income = 1000 }
+	local _, _, dg2, p2 = run(S2)
+	ok(dg2 and dg2.label == "재정 위기" and dg2.second == nil, "보간: 약한 차점 무병기", tostring(dg2 and dg2.second))
+	ok(not has(p2, "조짐도"), "보간: 산문에도 무병기")
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
