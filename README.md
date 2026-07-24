@@ -1,46 +1,61 @@
 # TW3 캠페인 어드바이저 (Campaign Advisor)
 
-Total War: WARHAMMER III 용 **플레이어 보조 모드**. 캠페인 맵에 "지금 할 일 추천" 버튼을 추가하고,
-누르면 현재 캠페인 상태(재정·영토·군대·인접 팩션·위협)를 읽어 다음 행동을 추천한다.
+Total War: WARHAMMER III 용 **한국어 전략 참모 모드**.
+캠페인 맵에 버튼 하나를 추가하고, 누르면 현재 캠페인 상태를 읽어 **다국면 전략 브리핑**을 한국어로 띄운다.
 
-> **Phase 1 = 읽기 전용.** 아무 행동도 자동 실행하지 않는다. 추천 점수 로직/LLM/write-back은 뒤 단계.
+> **읽기 전용.** 아무 행동도 자동 실행하지 않는다. 순수 Lua — 외부 프로그램·네트워크 없음.
 
-## 현재 환경 (실측 확정)
+## 무엇을 조언하나
+
+- **전략 계획 엔진** — 승리 조건·전황을 읽어 다턴 계획(격멸 대상 / 화친 / 속주 장악)을 세우고, 세이브에 저장해 턴이 지나도 **진행도를 추적**한다. 목표 달성 시 자동 재계획.
+  - 예: `① 크레이스 제거 — 잔여 2정착지(시작 2) · 야전 전력 우위. 다음 수: 토르 아카레 공략. 정리하면 크레이스 속주 완성(일석이조).`
+- **승산 대조** — 내 야전군 총합 vs 목표 팩션 전력, 기후 적합도(부적합 정착지 경고), 국력 순위.
+- **국면 진단** — 궁지 / 과확장 / 재정위기 / 초반 정착 / 소모전 / 성장기 등 현재 국면과 그에 맞는 우선순위.
+- **위협·외교** — 포위당한 도시, 무방비 국경, 화친·동맹 성사 가능 여부(CAI 실평가), 계획과의 트레이드오프까지 명시.
+- **내정** — 속주 치안(반란 임박 경고)·타락 7종, 재정 버퍼(CA 권장 5턴 기준), 성장 추세.
+- **스노우볼 감시** — 최강 라이벌의 팽창 속도를 턴 단위로 추적, 지배적 세력 경보.
+- **종족 메커니즘** — 24개 서브컬처 프로필: 고유 자원(신도·피의 입맞춤·와아아그·권위·영광 등) 실값 + 임계 경고, 전설군주별 조언 ~119종, 종족 팁.
+- **군단 점검** — 충원율·야포·원거리 비중(근접 종족 제외) 등 편성 헛점.
+- **정보 예산** — 긴급 정보는 무조건, 나머지는 중요도 순으로 13줄 이내. 계획에 이미 담긴 내용은 중복 억제.
+
+## 요구 사항 / 설치
+
 | 항목 | 값 |
 |---|---|
-| 게임 버전 | WARHAMMER III **8.1.1.0** |
-| Lua 런타임 | **5.1** (tw_autogen 기준) |
-| API ground truth | `chadvandy/tw_autogen` → `C:\Users\veria\tools\tw_autogen\output\wh3` |
-| 패킹 툴 | RPFM (`C:\Users\veria\tools\rpfm`) — CLI 확보 여부 확인 중 |
-| 테스트 환경 | **바닐라 먼저**, SFO/AI 스택은 나중 재검증 |
-| 배포 경로 | 빌드한 `.pack` → `%APPDATA%\The Creative Assembly\Warhammer3\mods\` → 런처에서 활성화 |
+| 게임 | Total War: WARHAMMER III **8.1.1** (Windows) |
+| 설치 | [Releases](../../releases)에서 `campaign_advisor.pack` 다운로드 → 게임 `data\` 폴더(또는 모드 매니저) → 활성화 |
+| 사용 | 캠페인 맵 좌상단 어드바이저 버튼 클릭 → 브리핑 패널 |
+
+현재는 **개발 스냅샷**: 디버그 로그가 켜져 있고 한국어 전용이다. 다국어(.loc)는 마지막 단계에서 붙는다.
+
+## 개발 원칙
+
+- **짐작 말고 실측** — API·DB 키는 [tw_autogen](https://github.com/chadvandy/tw_autogen), 바닐라 스크립트 디컴파일, DB/loc 바이너리 직접 추출로만 확정. 미검증이면 쓰지 않는다.
+- **읽기 전용 / 전투 범위 밖** (전투는 AI General III 영역).
+- **오프라인 하니스** — 두뇌부는 순수 함수. LuaJIT(5.1 세만틱)로 게임 없이 **221개 어서션** 회귀 테스트 (`scripts\test.ps1`). 게임 부팅은 API 경계 확인에만 쓴다.
 
 ## 저장소 구조
+
 ```
 tw3-campaign-advisor/
-├─ src/script/campaign/mod/   # .pack에 들어갈 Lua (인게임 로드 경로 그대로 미러링)
-├─ scripts/                   # 빌드/패킹 스크립트
-├─ build/                     # 산출 .pack (gitignore)
-├─ reference/vanilla_scripts/ # 추출한 바닐라 CA 스크립트 (레퍼런스, gitignore)
-├─ docs/                      # 단계별 인게임 확인 절차
-├─ .luarc.json               # LuaLS(sumneko) 설정 → tw_autogen 물림
-└─ .gitignore
+├─ src/script/campaign/mod/    # 인게임 Lua (campaign_advisor.lua 두뇌 + za_faction_profiles.lua 종족 데이터)
+├─ test/                       # 오프라인 하니스 (LuaJIT, 221 어서션)
+├─ scripts/                    # build.ps1(-Deploy) · test.ps1 · PFH5 패커 · DB/loc 추출기
+├─ docs/                       # 전략 API 카탈로그(실측 file:line) · 인게임 확인 절차
+├─ reference/                  # 추출한 바닐라 데이터 (CA 저작물 — gitignore, 로컬 전용)
+└─ build/                      # 산출 .pack (gitignore)
 ```
 
-## 개발 원칙 (브리프에서 확정)
-- **순수 Lua.** 지금은 LLM 연동 없음.
-- **읽기 전용.** write-back 없음.
-- **Windows 전용.**
-- **전투 범위 밖** (AI General III가 담당).
-- **API를 기억으로 지어내지 않는다.** tw_autogen 정의 + 추출한 바닐라 스크립트를 ground truth로.
+## 빌드
 
-## Phase 1 진행 (각 단계는 인게임 확인 후 다음으로)
-1. [진행중] 프로젝트 뼈대 + 툴링 (git, tw_autogen LSP, RPFM 빌드)
-2. [ ] 캠페인 시작 시 로드되는 스크립트 + 로드 증거 로그
-3. [ ] 캠페인 UI에 커스텀 버튼 추가
-4. [ ] 클릭 시 현재 상태(재정/영토 수/군대 수/인접 팩션) 덤프
+```powershell
+scripts\build.ps1          # .pack 생성 (자체 PFH5 패커, RPFM 불필요)
+scripts\build.ps1 -Deploy  # + 게임 data\ 로 복사
+scripts\test.ps1           # 오프라인 두뇌 테스트 221건
+```
 
-## 로드맵 (지금 구현 안 함)
-- Phase 2: 유틸리티 점수 추천 엔진 (CAI 테이블 시드)
-- Phase 3: 외부 LLM 파일 브리지
-- Phase 4: 화이트리스트 write-back + 확인 다이얼로그
+## 로드맵
+
+- **F4** — 실플레이 검증(상황부: 기후 주석·이동력 넛지·중반 시나리오·타종족 자원).
+- **F5** — 다국어 .loc 분리(이때 디버그 off, 정식 배포).
+- (선택) 개인용 LLM 2계층 — 구조화 상태 export → 파일 브리지. 휴리스틱 바닥은 그대로 유지.
