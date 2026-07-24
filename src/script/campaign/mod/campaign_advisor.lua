@@ -1725,31 +1725,49 @@ local function probe_cai_v36(S)
 		L[#L+1] = string.format("ai=%s null=%s", tostring(ai), tostring(isnull))
 		local f = nil
 		pcall(function() f = cm:get_local_faction(true) end)
-		local okey = (S.border_enemies and S.border_enemies[1]) or (S.border_others and S.border_others[1])
-			or (S.snowball and S.snowball.key)
-		local of = nil
-		if okey then pcall(function() of = cm:get_faction(okey, false) end) end
-		L[#L+1] = "상대=" .. tostring(okey)
-		-- 스탠스: (상대obj,나obj) / (나obj,상대obj) / (키,키) 세 방식 전부
+		-- 2차(v36b): 1차 결과 = 전부 number, 객체인자=0(디폴트 의심) vs 키인자=-2(실값 유력).
+		--   → 키 인자로 방향·대상 매트릭스 + 예산도 키로 재시도 → enum 실재 여부 확정.
+		local ekey = S.border_enemies and S.border_enemies[1]                    -- 전쟁 상대
+		local nkey = (S.border_others and S.border_others[1])
+			or (S.snowball and S.snowball.key)                                   -- 비적대(대조군)
+		L[#L+1] = string.format("적=%s 중립=%s", tostring(ekey), tostring(nkey))
 		local function try(tag, fn)
 			local ok2, v = pcall(fn)
-			L[#L+1] = string.format("%s: ok=%s type=%s val=%s", tag, tostring(ok2), type(v), tostring(v))
+			L[#L+1] = string.format("%s: ok=%s %s", tag, tostring(ok2), tostring(v))
 		end
-		if of and f then
-			try("stance(상대,나)", function() return ai:strategic_stance_between_factions(of, f) end)
-			try("stance(나,상대)", function() return ai:strategic_stance_between_factions(f, of) end)
-		end
-		if okey and S.faction then
-			try("stance(키,키)", function() return ai:strategic_stance_between_factions(okey, S.faction) end)
-		end
-		-- 예산: 상대 팩션의 영역별 즉시 가용액(적 여력 정찰용)
-		if of then
-			for _, area in ipairs({ "ARMIES", "CONSTRUCTION", "DIPLOMACY", "TECHNOLOGIES" }) do
-				try("funds즉시(" .. area .. ")", function() return ai:funds_available_for_immediate_payment_for_faction_by_area(of, area) end)
+		local pairs_to_test = {
+			{ "나→적",   S.faction, ekey }, { "적→나",   ekey, S.faction },
+			{ "나→중립", S.faction, nkey }, { "중립→나", nkey, S.faction },
+			{ "적→중립", ekey, nkey },
+		}
+		for _, p in ipairs(pairs_to_test) do
+			if p[2] and p[3] then
+				try("stance(" .. p[1] .. ")", function() return ai:strategic_stance_between_factions(p[2], p[3]) end)
 			end
-			try("funds유지(ARMIES)", function() return ai:funds_available_for_upkeep_for_faction_by_area(of, "ARMIES") end)
 		end
-		proof("[v36프로브] " .. table.concat(L, " | "), true)
+		-- cqi 변형(일부 CA 함수는 cqi를 받음)
+		if f and ekey then
+			try("stance(cqi)", function()
+				local ef = cm:get_faction(ekey, false)
+				return ai:strategic_stance_between_factions(f:command_queue_index(), ef:command_queue_index())
+			end)
+		end
+		-- 예산: 키 인자로 재시도(1차 객체인자=전부 0)
+		if ekey then
+			for _, area in ipairs({ "ARMIES", "CONSTRUCTION", "DIPLOMACY", "TECHNOLOGIES", "AGENTS", "CHARACTERS" }) do
+				try("funds적(" .. area .. ")", function() return ai:funds_available_for_immediate_payment_for_faction_by_area(ekey, area) end)
+			end
+			try("funds적유지", function() return ai:funds_available_for_upkeep_for_faction_by_area(ekey, "ARMIES") end)
+		end
+		if nkey then
+			try("funds중립(ARMIES)", function() return ai:funds_available_for_immediate_payment_for_faction_by_area(nkey, "ARMIES") end)
+		end
+		-- 스탠스 패밀리 부가정보(있으면 enum 해석에 도움)
+		if ekey and S.faction then
+			try("stance차단(나→적)", function() return ai:strategic_stance_between_factions_is_being_blocked(S.faction, ekey) end)
+			try("stance승격시작(나→적)", function() return ai:strategic_stance_between_factions_promotion_start_level(S.faction, ekey) end)
+		end
+		proof("[v36b프로브] " .. table.concat(L, " | "), true)
 	end)
 end
 
