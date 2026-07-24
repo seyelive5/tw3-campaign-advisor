@@ -1710,6 +1710,49 @@ local function gather_resource(prof)
 	return outv
 end
 
+-- ── v36 실측 프로브(DEBUG 전용) — CAI 스탠스·예산 API ────────────────
+-- tw_autogen 실존 확인됨(CAMPAIGN_AI_SCRIPT_INTERFACE)이나 반환 형식·인자 타입·
+-- 플레이어 대상 작동 여부 미상 → 인게임 1클릭으로 전부 기록. 확정되면 조언에 채택.
+local function probe_cai_v36(S)
+	if not DEBUG_FILE then return end
+	pcall(function()
+		local L = {}
+		local ai = nil
+		pcall(function() ai = cm:model():campaign_ai() end)
+		if not ai then proof("[v36프로브] campaign_ai() nil", true); return end
+		local isnull = nil
+		pcall(function() isnull = ai:is_null_interface() end)
+		L[#L+1] = string.format("ai=%s null=%s", tostring(ai), tostring(isnull))
+		local f = nil
+		pcall(function() f = cm:get_local_faction(true) end)
+		local okey = (S.border_enemies and S.border_enemies[1]) or (S.border_others and S.border_others[1])
+			or (S.snowball and S.snowball.key)
+		local of = nil
+		if okey then pcall(function() of = cm:get_faction(okey, false) end) end
+		L[#L+1] = "상대=" .. tostring(okey)
+		-- 스탠스: (상대obj,나obj) / (나obj,상대obj) / (키,키) 세 방식 전부
+		local function try(tag, fn)
+			local ok2, v = pcall(fn)
+			L[#L+1] = string.format("%s: ok=%s type=%s val=%s", tag, tostring(ok2), type(v), tostring(v))
+		end
+		if of and f then
+			try("stance(상대,나)", function() return ai:strategic_stance_between_factions(of, f) end)
+			try("stance(나,상대)", function() return ai:strategic_stance_between_factions(f, of) end)
+		end
+		if okey and S.faction then
+			try("stance(키,키)", function() return ai:strategic_stance_between_factions(okey, S.faction) end)
+		end
+		-- 예산: 상대 팩션의 영역별 즉시 가용액(적 여력 정찰용)
+		if of then
+			for _, area in ipairs({ "ARMIES", "CONSTRUCTION", "DIPLOMACY", "TECHNOLOGIES" }) do
+				try("funds즉시(" .. area .. ")", function() return ai:funds_available_for_immediate_payment_for_faction_by_area(of, area) end)
+			end
+			try("funds유지(ARMIES)", function() return ai:funds_available_for_upkeep_for_faction_by_area(of, "ARMIES") end)
+		end
+		proof("[v36프로브] " .. table.concat(L, " | "), true)
+	end)
+end
+
 -- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
 local function run_advisor()
 	local ok, err = pcall(function()
@@ -1726,6 +1769,7 @@ local function run_advisor()
 			S.resource and tostring(S.resource.label) or "없음(미커버 종족)"), true)
 		S.strat = collect_strategic(S)                     -- 전략 2.0: 속주·국력·군단·엔드게임·승리조건
 		if S.health and not (S.strat and S.strat.ok) then S.health[#S.health + 1] = "전략" end   -- v35
+		probe_cai_v36(S)                                   -- v36: CAI 스탠스·예산 API 실측(DEBUG 전용)
 		local D, cand = analyze(S, prof)
 		-- 전략 2.0: 다턴 계획 — 로드 → 완료 감지·기준선 승계 갱신 → 저장
 		do
