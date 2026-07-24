@@ -139,8 +139,8 @@ do  -- 무방비 위협 + 확장 표적 + 외교
 	local _, cand, _, prose = run(S)
 	ok(has(prose, "위협 — ") and has(prose, "근처 아군이 없습니다"), "산문: 무방비 위협")
 	ok(has(prose, "확장 기회 — "), "산문: 확장 표적")
-	ok(has(prose, "화친이 성사 가능한 상대"), "산문: 화친 가능")
-	ok(has(prose, "군사동맹이 가능한 상대"), "산문: 동맹 가능")
+	-- v35: 화친+동맹 동시 → 한 문장 병합(조사 과는/와는 포함)
+	ok(has(prose, "비스트맨과는 화친이") and has(prose, "브레토니아와는 군사동맹이 성사 가능합니다"), "산문: 화친+동맹 병합(v35)", prose:match("외교[^\n]*"))
 	local found = false
 	for _, c in ipairs(cand) do if c.key == "diplomacy" then found = true end end
 	ok(found, "분석: 외교 후보 생성")
@@ -554,6 +554,87 @@ do
 		local _, _, _, px = run(Sx)
 		ok(has(px, "제국 권위 12/100"), "자원 값/max 표시")
 	end
+end
+
+-- ══ 9. v35 — 조사 강화·절 병합(aggregation)·신뢰성 3-상태 ═══════════
+log("== 9. v35 조사·절병합·신뢰성 ==")
+do
+	-- 숫자 받침(tossi 규칙 이식)
+	ok(T.has_batchim("146") == true,  "숫자 받침: 146(육)=true")
+	ok(T.has_batchim("2") == false,   "숫자 받침: 2(이)=false")
+	ok(T.has_batchim("10") == true,   "숫자 받침: 10(십)=true")
+	ok(T.has_batchim("5") == false,   "숫자 받침: 5(오)=false")
+	-- (으)로: ㄹ받침 예외 + 숫자
+	ok(T.josa_ro("서울") == "로",   "(으)로: 서울→로(ㄹ예외)")
+	ok(T.josa_ro("짚") == "으로",   "(으)로: 짚→으로")
+	ok(T.josa_ro("외교") == "로",   "(으)로: 외교→로(모음)")
+	ok(T.josa_ro("823") == "으로",  "(으)로: 823(삼)→으로")
+	ok(T.josa_ro("821") == "로",    "(으)로: 821(일=ㄹ)→로")
+	ok(T.josa_ro("530") == "으로",  "(으)로: 530(영/십)→으로")
+	-- 절 병합기: 같은 극성 병렬(이고→이며), 극성 전환 1회만 '이나'
+	local j1 = T.join_clauses({ T.clause("재정은 흑자", "n", 1), T.clause("수입도 오르는 추세", "n", 1), T.clause("국경은 평온", "h", 1) })
+	ok(j1 == "재정은 흑자이고 수입도 오르는 추세이며 국경은 평온합니다", "병합: 전부 긍정(이고→이며 교대)", j1)
+	local j2 = T.join_clauses({ T.clause("재정은 흑자", "n", 1), T.clause("국경에서 적의 압박을 받고 있", "v", -1) })
+	ok(j2 == "재정은 흑자이나, 국경에서 적의 압박을 받고 있습니다", "병합: 극성 전환 1회(이나)", j2)
+	local j3 = T.join_clauses({ T.clause("재정은 적자라 주의가 필요", "h", -1) })
+	ok(j3 == "재정은 적자라 주의가 필요합니다", "병합: 단일 절", j3)
+	local j4 = T.join_clauses({ T.clause("국경은 평온", "h", 1), T.clause("재정은 적자라 주의가 필요", "h", -1), T.clause("수입은 꺾이는 추세", "n", -1) })
+	ok(j4 == "국경은 평온하나, 재정은 적자라 주의가 필요하고 수입은 꺾이는 추세입니다", "병합: 긍정1+부정2", j4)
+end
+do  -- 정세 문장 병합(경제+수입추세+위협 한 문장) + (으)로 실전
+	local S = baseS{ net = 823, trend = { dt = 1, treasury = 458, regions = 0, income = 2 },
+		immediate = 1, border_enemies = { "e" }, war_names = { "크레이스" } }
+	local _, _, _, prose = run(S)
+	ok(has(prose, "재정은 순 +823으로 흑자이고 수입도 오르는 추세이나, 국경에서 크레이스의 압박을 받고 있습니다"),
+		"정세: 3절 병합 문장", prose:match("[^\n]*순 %+823[^\n]*"))
+	ok(not has(prose, "최근 1턴 사이"), "정세: 수입 추세 별도 줄 제거(흡수)")
+	local S2 = baseS{ net = 500, trend = { dt = 2, treasury = 100, regions = 1, income = -30 } }
+	local _, _, _, p2 = run(S2)
+	ok(has(p2, "수입은 꺾이는 추세"), "정세: 역방향 추세 → '은' 선택", p2:match("[^\n]*추세[^\n]*"))
+	ok(has(p2, "최근 2턴 사이 영토가 늘었습니다"), "추세 줄: 영토만 잔류")
+end
+do  -- 내정 병합: 치안(N)+타락 → 한 문장 / 반란(U)이면 분리 유지
+	local S = baseS{ province = { unrest = { { region = "reg_a", po = -20 } },
+		corruption = { region = "reg_b", label = "너글", value = 66 } } }
+	local _, _, _, prose = run(S)
+	ok(has(prose, "내정 — ") and has(prose, "치안이 -20으로 낮고") and has(prose, "너글 타락이 66%"), "내정: 치안+타락 병합", prose:match("내정[^\n]*"))
+	ok(not has(prose, "타락 주의 — "), "내정: 병합 시 타락 단독줄 제거")
+	local Su = baseS{ province = { unrest = { { region = "reg_a", po = -60 } },
+		corruption = { region = "reg_b", label = "너글", value = 66 } } }
+	local _, _, _, pu = run(Su)
+	ok(has(pu, "반란 위험") and has(pu, "타락 주의 — "), "내정: 반란(U)이면 타락 단독줄 유지")
+	local Ss = baseS{ province = { unrest = { { region = "reg_a", po = -20 } },
+		corruption = { region = "reg_a", label = "너글", value = 66 } } }
+	local _, _, _, ps = run(Ss)
+	ok(has(ps, "너글 타락도 66%에 달합니다"), "내정: 같은 지역 → '타락도' 병합", ps:match("내정[^\n]*"))
+end
+do  -- 신뢰성 3-상태(문서1 0순위): 실패=경고, 정상=침묵 — '조용함'의 의미를 명시
+	local Sf = baseS{ health = { "위협", "외교" } }
+	local _, _, _, pf, bf = run(Sf)
+	ok(has(pf, "⚠ 데이터 — ") and has(pf, "위협·외교") and has(pf, "판단을 보류"), "신뢰성: 수집 실패 U 경고", pf:match("⚠[^\n]*"))
+	ok(has(bf, "수집상태: 실패=위협,외교"), "신뢰성: 파일 브리핑 실패 표기")
+	local So = baseS{ health = {} }
+	local _, _, _, po2, bo = run(So)
+	ok(not has(po2, "⚠ 데이터"), "신뢰성: 정상이면 경고 없음")
+	ok(has(bo, "수집상태: 전 섹션 정상"), "신뢰성: 파일 브리핑 정상 표기")
+	-- 외교 단독 경로 회귀(병합 아닌 기존 문구 유지)
+	local Sp = baseS{ diplo = { peace = { "wh_main_brt_bretonnia" }, ally = {} } }
+	local _, _, _, pp = run(Sp)
+	ok(has(pp, "화친이 성사 가능한 상대: 브레토니아"), "외교: 화친 단독 문구 유지")
+	local Sa = baseS{ diplo = { peace = {}, ally = { "wh_main_brt_bretonnia" } } }
+	local _, _, _, pa = run(Sa)
+	ok(has(pa, "군사동맹이 가능한 상대: 브레토니아"), "외교: 동맹 단독 문구 유지")
+	-- 자원 note 대시 치환: 종결어미 뒤=마침표, 그 외=쉼표
+	local Sn = baseS{ resource = { label = "신도", value = 146, note = "원천입니다 — 신도를 늘리세요" } }
+	local _, _, _, pn = run(Sn)
+	ok(has(pn, "원천입니다. 신도를 늘리세요"), "자원 note: '다 — ' → 마침표", pn:match("신도 146[^\n]*"))
+	-- 트레이드오프(계획상 제거 우선)+동맹 → 병합 문장
+	local St = baseS{ border_enemies = { "wh_dlc03_bst_beastmen" }, war_set = { wh_dlc03_bst_beastmen = true },
+		diplo = { peace = { "wh_dlc03_bst_beastmen" }, ally = { "wh_main_brt_bretonnia" } },
+		strat = { enemy = { wh_dlc03_bst_beastmen = { regions = 3 } }, provinces = {}, armies = {}, endgame = { active = {} } } }
+	St.plan = T.plan_generate(St, "소모전")
+	local _, _, _, pt = run(St)
+	ok(has(pt, "화친도 성사 가능하나 계획상 제거가 우선입니다. 한편 브레토니아와는 군사동맹이"), "외교: 트레이드오프+동맹 병합", pt:match("외교[^\n]*"))
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

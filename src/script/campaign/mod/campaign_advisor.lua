@@ -54,6 +54,61 @@ local function num(x, d) if x == nil then return d or 0 else return x end end
 local function clamp(x, lo, hi) if x < lo then return lo elseif x > hi then return hi else return x end end
 local function sev(s) if s >= 70 then return "높음" elseif s >= 45 then return "중간" else return "낮음" end end
 
+-- 한국어 조사 자동 선택 (v35: tossi 규칙 이식 — 숫자 받침 + (으)로 ㄹ-예외).
+-- 숫자 끝자리 한자음 받침: 0(영)·1(일)·3(삼)·6(육)·7(칠)·8(팔) 있음 / 2·4·5·9 없음.
+--   끝자리 0은 영/십/백/천/만 어느 쪽으로 읽어도 전부 받침 있음 → true로 일괄 안전.
+local DIGIT_BATCHIM = { [0]=true, [1]=true, [2]=false, [3]=true, [4]=false,
+                        [5]=false, [6]=true, [7]=true, [8]=true, [9]=false }
+-- 마지막 음절의 코드포인트(한글이면), 아니면 nil. #·byte는 바이트 단위(실측)라 안전.
+local function last_hangul_cp(word)
+	local n = #word
+	if n < 3 then return nil end
+	local b1, b2, b3 = word:byte(n - 2), word:byte(n - 1), word:byte(n)
+	if not (b1 and b2 and b3) then return nil end
+	if b1 < 0xE0 or b1 > 0xEF then return nil end                 -- 3바이트 UTF-8(한글) 아님
+	local cp = (b1 % 0x10) * 4096 + (b2 % 0x40) * 64 + (b3 % 0x40)
+	if cp < 0xAC00 or cp > 0xD7A3 then return nil end             -- 한글 음절 범위 아님
+	return cp
+end
+local function has_batchim(word)
+	local n = #word
+	if n >= 1 then
+		local lb = word:byte(n)
+		if lb and lb >= 0x30 and lb <= 0x39 then return DIGIT_BATCHIM[lb - 0x30] end
+	end
+	local cp = last_hangul_cp(word)
+	if not cp then return nil end
+	return ((cp - 0xAC00) % 28) ~= 0                              -- 받침 있으면 true
+end
+-- 조사 선택: 받침 있으면 withB, 없으면(또는 비한글) without.
+-- ※ WH3 Lua의 string.sub은 문자 단위라 pair 분리가 깨짐 → 조사를 개별 인자로 받는다(실측 버그 회피).
+local function josa(word, withB, without)
+	if has_batchim(word) == true then return withB else return without end
+end
+-- (으)로 전용: 받침 없음 또는 ㄹ받침(종성 8)이면 "로"(서울로·물로), 그 외 "으로"(짚으로).
+-- 숫자: 1(일)·7(칠)·8(팔)=ㄹ받침→로, 2·4·5·9=모음→로, 0(영·십·백…)·3(삼)·6(육)→으로.
+local function josa_ro(word)
+	local n = #word
+	if n >= 1 then
+		local lb = word:byte(n)
+		if lb and lb >= 0x30 and lb <= 0x39 then
+			local d = lb - 0x30
+			if d == 0 or d == 3 or d == 6 then return "으로" end
+			return "로"
+		end
+	end
+	local cp = last_hangul_cp(word)
+	if not cp then return "로" end                                -- 비한글 폴백(josa와 동일 방침)
+	local jong = (cp - 0xAC00) % 28
+	if jong == 0 or jong == 8 then return "로" end
+	return "으로"
+end
+-- 숫자+(으)로 축약 헬퍼: nro(-20) → "-20으로"
+local function nro(v)
+	local s = tostring(v)
+	return s .. josa_ro(s)
+end
+
 -- 팩션 키 → 표시명(자주 보는 것만; 없으면 키 그대로). 파일 출력이라 한글 OK.
 local FACTION_NAME = {
 	wh_main_emp_empire = "제국(라이클란트)",
@@ -212,7 +267,7 @@ end
 -- 반환 T = { sieges={지역키...}, threatened={ {region, on_land, faction, defended}... }, my_field={지역키=true} }
 local function gather_threats(f, war_set, border_enemies)
 	local T = { sieges = {}, threatened = {}, targets = {}, my_field = {} }
-	pcall(function()
+	T.ok = pcall(function()
 		local mine, my_adj, adj_to_mine, tgt_seen = {}, {}, {}, {}
 		local regions = f:region_list(); local rn = regions:num_items()
 		local checks = 0
@@ -314,7 +369,7 @@ end
 
 local function gather_diplomacy(f, war_set, border_enemies, border_others)
 	local D = { peace = {}, ally = {} }
-	pcall(function()
+	D.ok = pcall(function()
 		-- 화친 가능(전쟁 중): 국경 접한 적 우선, 최대 8
 		local scan, seen = {}, {}
 		if border_enemies then for _, k in ipairs(border_enemies) do if not seen[k] then seen[k] = true; scan[#scan + 1] = k end end end
@@ -362,7 +417,7 @@ local CORR_IGNORE = {
 local function gather_province_issues(f, subculture)
 	local PV = { unrest = {} }   -- PV.corruption = {region,label,value} (내 땅 최악, >=50만)
 	local skip_corr = subculture and CORR_IGNORE[subculture]
-	pcall(function()
+	PV.ok = pcall(function()
 		local regions = f:region_list(); local rn = regions:num_items()
 		local seen, corr_seen = {}, {}
 		for i = 0, math.min(rn, 50) - 1 do
@@ -404,7 +459,7 @@ end
 -- 성장률 추적(히스토리) 없이 정적 '우세' 감지 — 런어웨이 AI 조기 경고.
 local function gather_snowball(f, my_regions)
 	local top = nil
-	pcall(function()
+	local ok = pcall(function()
 		local met = f:factions_met(); local n = met:num_items()
 		for i = 0, math.min(n, 60) - 1 do
 			local of = met:item_at(i)
@@ -419,9 +474,9 @@ local function gather_snowball(f, my_regions)
 			end
 		end
 	end)
-	if not top then return nil end
+	if not top then return nil, ok end   -- ok=true면 '정말 라이벌 없음', false면 '조회 실패'(v35 구분)
 	top.dominant = top.regions >= math.max(12, num(my_regions, 0) * 2)   -- 압도적이면 즉시 경고, 아니면 성장률 추적용
-	return top
+	return top, ok
 end
 
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
@@ -481,7 +536,15 @@ local function gather_state()
 	-- 속주 내부(④): 공공질서 위기
 	S.province = gather_province_issues(f, S.subculture)
 	-- 스노우볼 감시(⑥): 압도적으로 큰 비동맹 세력
-	S.snowball = gather_snowball(f, S.regions)
+	local sb, sb_ok = gather_snowball(f, S.regions)
+	S.snowball = sb
+	-- 수집 건강 상태(v35 — 3-상태 분리): '실패'와 '평온'을 구분. 실패 섹션은 조언 보류를 명시.
+	S.health = {}
+	if S.faction == nil then S.health[#S.health + 1] = "핵심 상태" end
+	if not (S.threats and S.threats.ok) then S.health[#S.health + 1] = "위협" end
+	if not (S.diplo and S.diplo.ok) then S.health[#S.health + 1] = "외교" end
+	if not (S.province and S.province.ok) then S.health[#S.health + 1] = "내정" end
+	if not sb_ok then S.health[#S.health + 1] = "라이벌" end
 	return S
 end
 
@@ -509,9 +572,9 @@ local function analyze(S, prof)
 		local sc, rs = SEED.army_base, {}
 		if immediate > 0 then sc = sc + immediate * 12; rs[#rs+1] = string.format("국경 접한 적 %d개(즉각 위협)", immediate) end
 		if distant  > 0 then sc = sc + distant * 3;   rs[#rs+1] = string.format("국경 밖 전쟁 %d개", distant) end
-		if regions > 0 and density < 1 then sc = sc + 20; rs[#rs+1] = string.format("영토 %d 대비 필드군 %d로 얇음", regions, field) end
+		if regions > 0 and density < 1 then sc = sc + 20; rs[#rs+1] = string.format("영토 %d 대비 필드군 %s 얇음", regions, nro(field)) end
 		if deficit then sc = sc - 15; rs[#rs+1] = "적자라 모집 여력 제한" end
-		if net > 0 then sc = sc + 8; rs[#rs+1] = string.format("순수입 +%d로 모집 여력", net) end
+		if net > 0 then sc = sc + 8; rs[#rs+1] = string.format("순수입 +%s 모집 여력", nro(net)) end
 		cand[#cand+1] = { key = "military", label = "군사", score = clamp(sc, 0, 100), reasons = rs }
 	end
 	-- 경제 (건설/수입기반)
@@ -648,7 +711,7 @@ local function diagnose(S, D)
 end
 
 -- ── 브리핑 조립(다양한 오프너 + 랭킹 조언) ──────────────────────────
-local OPENERS = { "전략 브리핑", "현황 분석", "참모 보고", "정세 판단" }
+local OPENERS = { "전략 브리핑", "현황 분석", "참모 보고", "정세 판단", "전황 점검", "국면 진단", "정세 브리핑", "전략 평가" }
 
 local function build_briefing(S, D, cand, prof)
 	g_click = g_click + 1
@@ -669,6 +732,7 @@ local function build_briefing(S, D, cand, prof)
 		L[#L+1] = string.format("📈 추세(%d턴 전 대비): 재정 %+d · 영토 %+d · 수입 %+d",
 			S.trend.dt, S.trend.treasury, S.trend.regions, S.trend.income)
 	end
+	L[#L+1] = "🩺 수집상태: " .. ((S.health and #S.health > 0) and ("실패=" .. table.concat(S.health, ",") .. " — 해당 영역 판단 보류") or "전 섹션 정상")
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
 	do local dg = diagnose(S, D); if dg then L[#L+1] = "◆ 국면: " .. dg.label .. " — " .. dg.note end end
 	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0) then
@@ -748,28 +812,42 @@ end
 -- (build_tooltip 제거 — 현재 툴팁은 build_prose 산문을 사용. 데드코드 정리.)
 
 -- ── 자연어 산문 생성 (v9c) — 문구 풀 회전으로 다양화 ──
-local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면", "보고드리자면", "냉정히 보면", "지금 국면은" }
+local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면", "보고드리자면", "냉정히 보면", "종합하면" }
 local PROSE_MAX  = 13   -- 패널 산문 목표 총량(정보 예산). A+U(계획·국면·정세·긴급)는 열외, N·F부터 탈락.
 local PROSE_CONN = { "한편", "또한", "동시에", "이와 함께", "아울러", "그다음으로" }
 local function urgency(s)
 	if s >= 70 then return "가장 시급합니다" elseif s >= 45 then return "중요합니다" else return "고려할 만합니다" end
 end
 
--- 한국어 조사 자동 선택: 마지막 한글 음절의 받침 유무로 결정 (Lua 5.1 산술만 사용).
-local function has_batchim(word)
-	local n = #word
-	if n < 3 then return nil end
-	local b1, b2, b3 = word:byte(n - 2), word:byte(n - 1), word:byte(n)
-	if not (b1 and b2 and b3) then return nil end
-	if b1 < 0xE0 or b1 > 0xEF then return nil end                 -- 3바이트 UTF-8(한글) 아님
-	local cp = (b1 % 0x10) * 4096 + (b2 % 0x40) * 64 + (b3 % 0x40)
-	if cp < 0xAC00 or cp > 0xD7A3 then return nil end             -- 한글 음절 범위 아님
-	return ((cp - 0xAC00) % 28) ~= 0                              -- 받침 있으면 true
+-- ── 절 병합(aggregation, v35 — 문서2 §B·C) ──────────────────────────
+-- 사실들을 한 문장으로: 같은 극성은 병렬(이고→이며 교대), 극성 전환은 딱 한 번 '이나'로 신호.
+-- 종류: n=명사술어(이고/이며/이나/입니다), v=받침 용언어간 전용(고/으며/으나/습니다), h=하다(하고/하며/하나/합니다).
+local CLAUSE_END = {
+	n = { a1 = "이고", a2 = "이며", bt = "이나", fi = "입니다" },
+	v = { a1 = "고",   a2 = "으며", bt = "으나", fi = "습니다" },
+	h = { a1 = "하고", a2 = "하며", bt = "하나", fi = "합니다" },
+}
+local function clause(body, kind, pol)
+	return { body = body, e = CLAUSE_END[kind] or CLAUSE_END.n, pol = pol or 1 }
 end
--- 조사 선택: 받침 있으면 withB, 없으면(또는 비한글) without.
--- ※ WH3 Lua의 string.sub은 문자 단위라 pair 분리가 깨짐 → 조사를 개별 인자로 받는다(실측 버그 회피).
-local function josa(word, withB, without)
-	if has_batchim(word) == true then return withB else return without end
+local function join_clauses(cs)
+	if #cs == 0 then return "" end
+	local pos, neg = {}, {}
+	for _, c in ipairs(cs) do
+		if (c.pol or 1) >= 0 then pos[#pos + 1] = c else neg[#neg + 1] = c end
+	end
+	local function chain(list, tail)   -- a1/a2 교대로 잇고 마지막만 tail 어미
+		local parts = {}
+		for i = 1, #list do
+			local c = list[i]
+			if i < #list then parts[#parts + 1] = c.body .. ((i % 2 == 1) and c.e.a1 or c.e.a2)
+			else parts[#parts + 1] = c.body .. c.e[tail] end
+		end
+		return table.concat(parts, " ")
+	end
+	if #neg == 0 then return chain(pos, "fi") end
+	if #pos == 0 then return chain(neg, "fi") end
+	return chain(pos, "bt") .. ", " .. chain(neg, "fi")   -- 긍정 병렬 →(전환 1회)→ 부정 병렬
 end
 
 local plan_prose_lines   -- 전방 선언(전략 2.0 — 실제 정의는 아래 계획 엔진 섹션; upvalue 바인딩)
@@ -791,15 +869,28 @@ local function build_prose(S, D, cand, prof)
 		local dg = diagnose(S, D)
 		if dg then A[#A+1] = string.format("【국면 · %s】 %s.", dg.label, dg.note) end
 	end
-	-- A: 정세 도입
-	local eco = D.deficit and "재정은 적자라 주의가 필요하고"
-		or (D.net > 0 and string.format("재정은 순 +%d로 흑자이며", num(S.net, 0)) or "재정은 대체로 균형이고")
-	local threat
-	if D.immediate >= 2 then threat = "국경에서 여러 세력의 압박을 받고 있습니다"
-	elseif D.immediate == 1 then threat = string.format("국경에서 %s의 압박을 받고 있습니다", tostring(S.war_names[1] or "적"))
-	elseif D.wars > 0 then threat = "전쟁 중이나 국경은 아직 평온합니다"
-	else threat = "국경은 평온합니다" end
-	A[#A+1] = string.format("%s, %s%s %s턴 현재 %s, %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), eco, threat)
+	-- A: 정세 도입 — 절 병합(v35): 경제·수입추세·국경위협을 한 문장으로. 대조는 '이나' 한 번만(남발 금지).
+	local cls = {}
+	local eco_pol = D.deficit and -1 or 1
+	if D.deficit then cls[#cls + 1] = clause("재정은 적자라 주의가 필요", "h", -1)
+	elseif D.net > 0 then
+		local nv = tostring(num(S.net, 0))
+		cls[#cls + 1] = clause(string.format("재정은 순 +%s%s 흑자", nv, josa_ro(nv)), "n", 1)
+	else cls[#cls + 1] = clause("재정은 대체로 균형", "n", 1) end
+	if S.trend and S.trend.income ~= 0 then   -- 수입 추세를 정세 문장에 흡수(별도 줄 대신)
+		local tp = (S.trend.income > 0) and 1 or -1
+		local subj = (tp == eco_pol) and "수입도" or "수입은"   -- 같은 방향일 때만 '도'
+		cls[#cls + 1] = clause(subj .. ((tp > 0) and " 오르는 추세" or " 꺾이는 추세"), "n", tp)
+	end
+	if D.immediate >= 2 then cls[#cls + 1] = clause("국경에서 여러 세력의 압박을 받고 있", "v", -1)
+	elseif D.immediate == 1 then cls[#cls + 1] = clause(string.format("국경에서 %s의 압박을 받고 있", tostring(S.war_names[1] or "적")), "v", -1)
+	elseif D.wars > 0 then cls[#cls + 1] = clause("전쟁 중에도 국경은 아직 평온", "h", 1)
+	else cls[#cls + 1] = clause("국경은 평온", "h", 1) end
+	A[#A+1] = string.format("%s, %s%s %s턴 현재 %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), join_clauses(cls))
+	-- U: 데이터 신뢰성(v35 — 문서1 0순위): 수집 실패를 '평온'으로 위장하지 않는다.
+	if S.health and #S.health > 0 then
+		U[#U+1] = string.format("⚠ 데이터 — 이번 클릭에 %s 정보를 읽지 못했습니다. 해당 영역은 판단을 보류합니다(조용함≠안전).", table.concat(S.health, "·"))
+	end
 	-- U/N: 위협(모듈1) — 포위·무방비=긴급. 방어된 위협은 계획 미커버 대상만(중복 억제).
 	if S.threats then
 		local Tt = S.threats
@@ -829,38 +920,47 @@ local function build_prose(S, D, cand, prof)
 		local g = S.rival_growth
 		local fastgrow = g and g.dt >= 2 and g.growth >= 3
 		if S.snowball.dominant then
-			local extra = fastgrow and string.format(" 게다가 최근 %d턴간 영토 +%d로 급성장 중입니다.", g.dt, g.growth) or ""
+			local extra = fastgrow and string.format(" 게다가 최근 %d턴간 영토 +%s 급성장 중입니다.", g.dt, nro(g.growth)) or ""
 			U[#U+1] = string.format("경계 — %s가 압도적으로 커졌습니다(영토 %d).%s 방치하면 손쓸 수 없습니다. 견제하거나 대항 동맹을 규합하세요.", fname(S.snowball.key), S.snowball.regions, extra)
 		elseif fastgrow then
-			N[#N+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%d로 급성장 중입니다(현재 %d). 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, g.growth, S.snowball.regions)
+			N[#N+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%s 급성장 중입니다(현재 %d). 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, nro(g.growth), S.snowball.regions)
 		end
 	end
-	-- U/N: 반란(임박=긴급)/내정 주의(④)
+	-- U/N: 반란(임박=긴급)/내정 주의(④) — v35: 치안+타락 동시면 한 문장으로 병합(aggregation)
+	local corr_used = false
 	if S.province and #S.province.unrest > 0 then
 		local worst = S.province.unrest[1]
 		for _, u in ipairs(S.province.unrest) do if u.po < worst.po then worst = u end end
 		if worst.po <= -50 then
-			U[#U+1] = string.format("반란 위험 — %s의 공공질서가 %d로 붕괴 직전입니다. 주둔군 강화나 억압으로 진정시키세요.", region_disp(worst.region), worst.po)
+			U[#U+1] = string.format("반란 위험 — %s의 공공질서가 %s 붕괴 직전입니다. 주둔군 강화나 억압으로 진정시키세요.", region_disp(worst.region), nro(worst.po))
 		else
-			N[#N+1] = string.format("내정 주의 — %s의 공공질서가 %d로 낮습니다. 방치하면 반란으로 이어집니다.", region_disp(worst.region), worst.po)
+			local c = S.province.corruption
+			if c then
+				corr_used = true
+				if c.region == worst.region then
+					N[#N+1] = string.format("내정 — %s 치안이 %s 낮고 %s 타락도 %d%%에 달합니다. 방치하면 반란과 수입 악화로 이어집니다.",
+						region_disp(worst.region), nro(worst.po), c.label, math.floor(c.value))
+				else
+					N[#N+1] = string.format("내정 — %s 치안이 %s 낮고, %s엔 %s 타락이 %d%%입니다. 방치하면 반란과 수입 악화로 이어집니다.",
+						region_disp(worst.region), nro(worst.po), region_disp(c.region), c.label, math.floor(c.value))
+				end
+			else
+				N[#N+1] = string.format("내정 주의 — %s의 공공질서가 %s 낮습니다. 방치하면 반란으로 이어집니다.", region_disp(worst.region), nro(worst.po))
+			end
 		end
 	end
 	-- U/N: 종족 자원(①) — 긴급 임계면 승격. max(상한, db 실측)가 있으면 비율 표시.
 	if S.resource then
 		local vtxt = S.resource.max and string.format("%d/%d", math.floor(S.resource.value), S.resource.max)
 			or tostring(math.floor(S.resource.value))
-		local note = (tostring(S.resource.note):gsub(" — ", ", "))   -- 템플릿 대시와 이중 방지
+		-- 템플릿 대시와 이중 방지: 문장 종결("…다") 뒤 대시는 마침표로, 그 외는 쉼표로
+		local note = (tostring(S.resource.note):gsub("다 — ", "다. "):gsub(" — ", ", "))
 		local line = string.format("%s %s — %s.", S.resource.label, vtxt, note)
 		if S.resource.urgent then U[#U+1] = line else N[#N+1] = line end
 	end
-	-- N: 추세
-	if S.trend then
-		local tp = {}
-		if S.trend.regions > 0 then tp[#tp+1] = "영토가 늘고" elseif S.trend.regions < 0 then tp[#tp+1] = "영토가 줄고" end
-		if S.trend.income > 0 then tp[#tp+1] = "수입이 오르는 추세입니다"
-		elseif S.trend.income < 0 then tp[#tp+1] = "수입이 꺾이는 추세입니다"
-		else tp[#tp+1] = "수입은 정체 상태입니다" end
-		if #tp > 0 then N[#N+1] = string.format("최근 %d턴 사이 %s.", S.trend.dt, table.concat(tp, ", ")) end
+	-- N: 추세(영토만 — 수입 추세는 정세 문장에 병합 v35, 정체는 무정보라 생략)
+	if S.trend and S.trend.regions ~= 0 then
+		N[#N+1] = string.format("최근 %d턴 사이 영토가 %s.", S.trend.dt, (S.trend.regions > 0) and "늘었습니다" or "줄었습니다")
 	end
 	-- N: 보강 1건 — 계획(군사/확장)·전용줄(외교)과 겹치지 않는 축만.
 	--   경제/기술은 항상 후보, 방어는 긴급(U)이 비었을 때만(긴급 줄과 중복 방지). 구 최우선/차선 블록 대체.
@@ -903,8 +1003,10 @@ local function build_prose(S, D, cand, prof)
 			N[#N+1] = string.format("이동력 — 야전 대기 중인 미이동 군단 %d개. 턴 종료 전 활용하세요.", idle)
 		end
 	end
-	-- N: 외교(모듈4) — 계획과의 일관성(제거=모순 문구, 화친 단계=무언 흡수)
+	-- N: 외교(모듈4) — 계획과의 일관성(제거=모순 문구, 화친 단계=무언 흡수).
+	--   v35: 화친·동맹이 동시에 가능하면 두 줄 대신 한 문장으로 병합(aggregation).
 	if S.diplo then
+		local peace_names, trade_name = nil, nil
 		if #S.diplo.peace > 0 then
 			local elim_key, sup = nil, {}
 			if S.plan then
@@ -916,24 +1018,31 @@ local function build_prose(S, D, cand, prof)
 			local show = {}
 			for _, k in ipairs(S.diplo.peace) do if not sup[k] then show[#show + 1] = k end end
 			if #show > 0 then
-				N[#N+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", first_names(show, 2))
+				peace_names = first_names(show, 2)
 			elseif elim_key and sup[elim_key] then
-				local dup = false
-				for _, k in ipairs(S.diplo.peace) do if k == elim_key then dup = true end end
-				if dup then
-					N[#N+1] = string.format("외교 — %s와의 화친도 성사 가능하나, 계획상 제거가 우선입니다. 전황이 급하면 화친으로 전선을 줄이는 선택도 유효합니다.", fname(elim_key))
-				end
+				for _, k in ipairs(S.diplo.peace) do if k == elim_key then trade_name = fname(elim_key) end end
 			end
 		end
-		if #S.diplo.ally > 0 then
-			N[#N+1] = string.format("외교 — 군사동맹이 가능한 상대: %s. 제안을 검토하세요.", first_names(S.diplo.ally, 2))
+		local ally_names = (#S.diplo.ally > 0) and first_names(S.diplo.ally, 2) or nil
+		if peace_names and ally_names then
+			N[#N+1] = string.format("외교 — %s%s는 화친이, %s%s는 군사동맹이 성사 가능합니다. 전선을 줄이고 뒷배를 얻을 기회입니다.",
+				peace_names, josa(peace_names, "과", "와"), ally_names, josa(ally_names, "과", "와"))
+		elseif trade_name and ally_names then
+			N[#N+1] = string.format("외교 — %s%s의 화친도 성사 가능하나 계획상 제거가 우선입니다. 한편 %s%s는 군사동맹이 가능하니 제안을 검토하세요.",
+				trade_name, josa(trade_name, "과", "와"), ally_names, josa(ally_names, "과", "와"))
+		elseif peace_names then
+			N[#N+1] = string.format("외교 — 화친이 성사 가능한 상대: %s. 전선을 줄이려면 제안하세요.", peace_names)
+		elseif trade_name then
+			N[#N+1] = string.format("외교 — %s%s의 화친도 성사 가능하나, 계획상 제거가 우선입니다. 전황이 급하면 화친으로 전선을 줄이는 선택도 유효합니다.", trade_name, josa(trade_name, "과", "와"))
+		elseif ally_names then
+			N[#N+1] = string.format("외교 — 군사동맹이 가능한 상대: %s. 제안을 검토하세요.", ally_names)
 		end
 	end
 	-- N: 연구(모듈2) / 타락(④)
 	if S.research_idle == true then
 		N[#N+1] = "연구가 지정되지 않았습니다. 기술을 골라 착수하세요."
 	end
-	if S.province and S.province.corruption then
+	if S.province and S.province.corruption and not corr_used then
 		local c = S.province.corruption
 		N[#N+1] = string.format("타락 주의 — %s에 %s 타락이 %d%%입니다. 통제·수입에 악영향이니 정화를 고려하세요.", region_disp(c.region), c.label, math.floor(c.value))
 	end
@@ -1054,9 +1163,9 @@ end
 --        endgame={armed={scenario,turn}|nil, active={이름..}}, victory={vtype,total}|nil }
 local function collect_strategic(S)
 	local ST = { provinces = {}, enemy = {}, armies = {}, endgame = { active = {} } }
-	pcall(function()
+	ST.ok = pcall(function()
 		local f = cm:get_local_faction(true)
-		if not f then return end
+		if not f then error("팩션 조회 실패") end   -- v35: 조용한 return 대신 실패로 기록
 		pcall(function() ST.my_rank = cm:model():world():faction_strength_rank(f) end)
 		-- 속주 완성 현황(내 지역 기준 속주 dedupe)
 		pcall(function()
@@ -1616,6 +1725,7 @@ local function run_advisor()
 			S.snowball and tostring(S.snowball.key) or "없음",
 			S.resource and tostring(S.resource.label) or "없음(미커버 종족)"), true)
 		S.strat = collect_strategic(S)                     -- 전략 2.0: 속주·국력·군단·엔드게임·승리조건
+		if S.health and not (S.strat and S.strat.ok) then S.health[#S.health + 1] = "전략" end   -- v35
 		local D, cand = analyze(S, prof)
 		-- 전략 2.0: 다턴 계획 — 로드 → 완료 감지·기준선 승계 갱신 → 저장
 		do
@@ -1682,7 +1792,8 @@ end
 if ADVISOR_TEST_EXPORTS then
 	CA_TEST = {
 		num = num, clamp = clamp, sev = sev, urgency = urgency,
-		has_batchim = has_batchim, josa = josa,
+		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
+		clause = clause, join_clauses = join_clauses,
 		fname = fname, region_disp = region_disp, first_names = first_names,
 		get_profile = get_profile,
 		analyze = analyze, overall = overall, diagnose = diagnose,
