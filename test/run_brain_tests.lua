@@ -637,6 +637,30 @@ do  -- 신뢰성 3-상태(문서1 0순위): 실패=경고, 정상=침묵 — '�
 	ok(has(pt, "화친도 성사 가능하나 계획상 제거가 우선입니다. 한편 브레토니아와는 군사동맹이"), "외교: 트레이드오프+동맹 병합", pt:match("외교[^\n]*"))
 end
 
+-- ══ 10. v36 — CAI 정찰(스탠스·군비) 조언 통합 ═══════════════════════
+log("== 10. v36 CAI 정찰 ==")
+do
+	-- 적 군비 고갈(<300) → 계획 ①에 속전 신호 / 충분하면 무언
+	local S = baseS{ border_enemies = { "foe" }, war_set = { foe = true },
+		strat = { enemy = { foe = { regions = 3, strength = 4000, war_chest = 120 } }, my_strength = 9000,
+			provinces = {}, armies = {}, endgame = { active = {} } } }
+	S.plan = T.plan_generate(S, "소모전")
+	local pl = table.concat(T.plan_prose_lines(S), "\n")
+	ok(has(pl, "적 군비 고갈 — 몰아칠 때"), "CAI: 군비 고갈 → 속전 신호", pl:match("①[^\n]*"))
+	S.strat.enemy.foe.war_chest = 5000
+	local pl2 = table.concat(T.plan_prose_lines(S), "\n")
+	ok(not has(pl2, "군비 고갈"), "CAI: 군비 충분 → 무언")
+	-- 비전시 적대 이웃 경보(음수 스탠스) + 조사
+	local Sh = baseS{ strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} },
+		hostile = { { key = "wh_main_grn_greenskins", stance = -1 } } } }
+	local _, _, _, ph, bh = run(Sh)
+	ok(has(ph, "경계 — 이웃 그린스킨이 전쟁 전인데도 우리를 적대시"), "CAI: 적대 이웃 경보+조사(이)", ph:match("경계[^\n]*"))
+	ok(has(bh, "적대이웃 그린스킨(-1)"), "CAI: 파일 브리핑 정찰 줄")
+	local Sq = baseS{ strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} }, hostile = {} } }
+	local _, _, _, pq = run(Sq)
+	ok(not has(pq, "적대시"), "CAI: 적대 없음 → 무언")
+end
+
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
 local report = table.concat(R.lines, "\n")
 local fh = real_open(ROOT .. "/test/out_brain_report.txt", "w")

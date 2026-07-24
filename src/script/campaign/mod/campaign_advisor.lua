@@ -757,6 +757,14 @@ local function build_briefing(S, D, cand, prof)
 		if #S.diplo.ally > 0 then dp[#dp+1] = "동맹가능=" .. first_names(S.diplo.ally, 3) end
 		L[#L+1] = "🤝 외교: " .. table.concat(dp, " · ")
 	end
+	if S.strat and (S.strat.enemy or S.strat.hostile) then   -- v36 CAI 정찰(디버그 가시성)
+		local cs = {}
+		for k, e in pairs(S.strat.enemy or {}) do
+			if e.war_chest ~= nil then cs[#cs+1] = string.format("%s군비%d", fname(k), e.war_chest) end
+		end
+		for _, h in ipairs(S.strat.hostile or {}) do cs[#cs+1] = string.format("적대이웃 %s(%d)", fname(h.key), h.stance) end
+		if #cs > 0 then L[#L+1] = "🎯 CAI 정찰: " .. table.concat(cs, " · ") end
+	end
 	if S.province and #S.province.unrest > 0 then
 		local us = {}; for _, u in ipairs(S.province.unrest) do us[#us+1] = region_disp(u.region) .. "(" .. u.po .. ")" end
 		L[#L+1] = "🏛 공공질서: " .. table.concat(us, ", ")
@@ -925,6 +933,12 @@ local function build_prose(S, D, cand, prof)
 		elseif fastgrow then
 			N[#N+1] = string.format("주시 — %s가 최근 %d턴간 영토 +%s 급성장 중입니다(현재 %d). 커지기 전에 견제를 고려하세요.", fname(S.snowball.key), g.dt, nro(g.growth), S.snowball.regions)
 		end
+	end
+	-- N: 비전시 이웃 적대 스탠스(v36, CAI 실측) — 선전포고 조기 경보
+	if S.strat and S.strat.hostile and #S.strat.hostile > 0 then
+		local h = S.strat.hostile[1]
+		local hn = fname(h.key)
+		N[#N+1] = string.format("경계 — 이웃 %s%s 전쟁 전인데도 우리를 적대시하고 있습니다(CAI 스탠스 %d). 국경 방비를 갖추거나 관계 개선·선제 중 하나를 준비하세요.", hn, josa(hn, "이", "가"), h.stance)
 	end
 	-- U/N: 반란(임박=긴급)/내정 주의(④) — v35: 치안+타락 동시면 한 문장으로 병합(aggregation)
 	local corr_used = false
@@ -1199,6 +1213,13 @@ local function collect_strategic(S)
 				end
 			end
 		end)
+		-- CAI 정찰(v36, 인게임 실측 확정): 스탠스·즉시 군비 — 반드시 '팩션 키 문자열' 인자.
+		--   실측: 키 인자만 실값(전쟁상대 -2/중립 0, 군비 1964 등), 객체·cqi 인자는 0(미해석).
+		local ai = nil
+		pcall(function()
+			local a = cm:model():campaign_ai()
+			if a and not a:is_null_interface() then ai = a end
+		end)
 		-- 국경 전쟁적 상세(잔여 영토·국력순위) — 제거 표적 랭킹용
 		for i = 1, math.min(#(S.border_enemies or {}), 8) do
 			local k = S.border_enemies[i]
@@ -1208,6 +1229,9 @@ local function collect_strategic(S)
 					if ef and not ef:is_null_interface() then
 						local e = { regions = ef:region_list():num_items() }
 						pcall(function() e.rank = cm:model():world():faction_strength_rank(ef) end)
+						if ai then   -- v36: 적 군비 여력(소모전 판단용)
+							pcall(function() e.war_chest = ai:funds_available_for_immediate_payment_for_faction_by_area(k, "ARMIES") end)
+						end
 						pcall(function()   -- 야전 전력 합(승산 판단용) — mf:strength() 실측 API
 							local el = ef:military_force_list(); local en = el:num_items()
 							local s2 = 0
@@ -1222,6 +1246,18 @@ local function collect_strategic(S)
 						ST.enemy[k] = e
 					end
 				end)
+			end
+		end
+		-- 비전시 이웃의 적대 스탠스 감시(v36) — 선전포고 조기 경보(실측: 음수=적대, 0=중립)
+		if ai then
+			ST.hostile = {}
+			for i = 1, math.min(#(S.border_others or {}), 8) do
+				local k = S.border_others[i]
+				local st = nil
+				pcall(function() st = ai:strategic_stance_between_factions(k, S.faction) end)
+				if type(st) == "number" and st < 0 then
+					ST.hostile[#ST.hostile + 1] = { key = k, stance = st }
+				end
 			end
 		end
 		-- 군단 점검(야전군: 유닛수·야포(art_fld)·평균 충원율)
@@ -1499,6 +1535,9 @@ function plan_prose_lines(S)
 					else rl = " · 야전 전력 열세 — 요격·증원 먼저" end
 				end
 			end
+			-- v36: 적 즉시 군비(CAI 실측). 유닛 하나 값(<300)도 없으면 재건 불능 → 속전 신호
+			local wc = ST and ST.enemy and ST.enemy[s.key] and ST.enemy[s.key].war_chest
+			if type(wc) == "number" and wc < 300 then rl = rl .. " · 적 군비 고갈 — 몰아칠 때" end
 			line = string.format("%s %s 제거 — 잔여 %d정착지(시작 %d)%s%s.", NUMS[i], fname(s.key), s.last or 0, s.base or s.last or 0, trend, rl)
 			if S.threats and S.threats.targets then
 				local nx, nxf
