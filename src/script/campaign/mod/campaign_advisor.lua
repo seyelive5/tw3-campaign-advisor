@@ -109,6 +109,34 @@ local function nro(v)
 	return s .. josa_ro(s)
 end
 
+-- 재정 활주로 문구(v40) — 음수 국고·0턴을 "~-3턴 내 고갈" 같은 헛말로 내보내지 않는다.
+--   long=true 는 U(긴급) 줄용 완문, 기본은 국면 줄용 축약. 둘은 상호배타 배치라 반복감 없음.
+local function runway_phrase(P, long)
+	if type(P) ~= "table" then return nil end
+	if P.broke then return "국고가 이미 마이너스입니다" end
+	if P.runway == 0 then
+		return long and "이 추세면 이번 턴에 국고가 바닥납니다" or "이 추세면 이번 턴에 바닥납니다"
+	end
+	if P.runway then
+		return long and string.format("이 추세면 약 %d턴 뒤 국고가 바닥납니다", P.runway)
+			or string.format("이 추세면 ~%d턴 내 고갈됩니다", P.runway)
+	end
+	return nil
+end
+
+-- 첫 정착지 후보 선택(v40) — 전시 상대 우선, 기후 부적합은 최후.
+--   계획 ①과 '확장 기회' 줄이 각자 고르면 같은 정착지를 두 번 방송하게 되므로 판정은 여기 한 곳.
+local function pick_settle(list)
+	if type(list) ~= "table" or #list == 0 then return nil end
+	local pick, alt
+	for _, c in ipairs(list) do
+		if c.suit ~= "suitability_verypoor" then
+			if c.at_war then pick = c; break elseif not alt then alt = c end
+		end
+	end
+	return pick or alt or list[1]
+end
+
 -- 팩션 키 → 표시명(자주 보는 것만; 없으면 키 그대로). 파일 출력이라 한글 OK.
 local FACTION_NAME = {
 	wh_main_emp_empire = "제국(라이클란트)",
@@ -157,20 +185,22 @@ local function get_profile(S)
 end
 
 -- 팩션 리스트 → 키 집합(set) {key=true}
+-- v40: ok(조회 성공 여부)도 반환 — 실패한 빈 집합을 "전쟁 없음"으로 위장하지 않기 위해.
 local function key_set(list_getter, cap)
 	local set, cnt = {}, 0
-	pcall(function()
+	local ok = pcall(function()
 		local l = list_getter(); local n = l:num_items()
 		for i = 0, math.min(n, cap or 200) - 1 do set[l:item_at(i):name()] = true; cnt = cnt + 1 end
 	end)
-	return set, cnt
+	return set, cnt, ok
 end
 
 -- 실제 국경 인접: 내 지역들의 인접 지역 소유주 → 이웃 팩션 키 집합.
 -- (adjacency 폭주 방지 위해 총 검사 횟수 상한.)
+-- v40: ok도 반환 — 인접 조회 실패를 "국경 평온"으로 위장하지 않기 위해(수집상태에 기록).
 local function gather_neighbors(f, my_key)
 	local nb = {}
-	pcall(function()
+	local ok = pcall(function()
 		local regions = f:region_list(); local rn = regions:num_items()
 		local checks = 0
 		for i = 0, rn - 1 do
@@ -183,17 +213,17 @@ local function gather_neighbors(f, my_key)
 				local abandoned = false
 				pcall(function() abandoned = a:is_abandoned() end)
 				if not abandoned then
-					local ok = nil
+					local own = nil        -- v40: 바깥 ok(pcall 결과)와 이름 충돌 피해 own으로
 					pcall(function()
 						local o = a:owning_faction()
-						if o and not o:is_null_interface() then ok = o:name() end
+						if o and not o:is_null_interface() then own = o:name() end
 					end)
-					if ok and ok ~= my_key then nb[ok] = true end
+					if own and own ~= my_key then nb[own] = true end
 				end
 			end
 		end
 	end)
-	return nb
+	return nb, ok
 end
 
 -- 팩션 강도 근사 = 소유 영토 수 (없으면 nil). 이웃 강약 평가용.
@@ -265,8 +295,8 @@ end
 
 -- 위협 수집: 내 지역별 포위 여부 + 전쟁 팩션 야전군이 내 땅/인접에 있는가 + 아군 야전군 근접 여부.
 -- 반환 T = { sieges={지역키...}, threatened={ {region, on_land, faction, defended}... }, my_field={지역키=true} }
-local function gather_threats(f, war_set, border_enemies)
-	local T = { sieges = {}, threatened = {}, targets = {}, my_field = {} }
+local function gather_threats(f, war_set, border_enemies, my_key)
+	local T = { sieges = {}, threatened = {}, targets = {}, settle = {}, my_field = {} }
 	T.ok = pcall(function()
 		local mine, my_adj, adj_to_mine, tgt_seen = {}, {}, {}, {}
 		local regions = f:region_list(); local rn = regions:num_items()
@@ -315,6 +345,63 @@ local function gather_threats(f, war_set, border_enemies)
 				if r then T.my_field[r] = true end
 			end
 		end)
+		-- v40: 영토 0(호드·유랑) 실명 구간 — 위 지역 루프가 한 번도 돌지 않아 표적·위협이
+		--   전부 빈 값이 되던 문제. 내 야전군이 선 지역을 앵커로 인접을 훑어
+		--   ①첫 정착지 후보(T.settle) ②전쟁 중 적 정착지(T.targets) ③앵커 인근 적군 접근을 잡는다.
+		--   폐허(is_abandoned)는 식민 가능 여부 미실측이라 제외(짐작 금지).
+		if rn == 0 then
+			local acheck = 0
+			pcall(function()
+				local myf = f:military_force_list(); local mn = myf:num_items()
+				for i = 0, math.min(mn, 10) - 1 do
+					local mf = myf:item_at(i)
+					local reg = nil
+					pcall(function()
+						if mf:has_general() and not mf:is_armed_citizenry() then
+							local ch = mf:general_character()
+							if ch and ch:has_region() and not ch:region():is_null_interface() then reg = ch:region() end
+						end
+					end)
+					if reg then
+						local anchor = reg:name()
+						adj_to_mine[anchor] = anchor        -- 앵커 = 내 위치(적군 접근 판정 기준선)
+						local cands = { reg }
+						pcall(function()
+							local adj = reg:adjacent_region_list(); local an = adj:num_items()
+							for j = 0, an - 1 do
+								if acheck > 60 then break end
+								acheck = acheck + 1
+								cands[#cands + 1] = adj:item_at(j)
+							end
+						end)
+						for _, c in ipairs(cands) do
+							pcall(function()
+								local cn = c:name()
+								if not adj_to_mine[cn] then adj_to_mine[cn] = anchor end
+								if not tgt_seen[cn] and #T.settle < 8 then
+									tgt_seen[cn] = true
+									local aband = false
+									pcall(function() aband = c:is_abandoned() end)
+									local ow = nil
+									pcall(function()
+										local o = c:owning_faction()
+										if o and not o:is_null_interface() then ow = o:name() end
+									end)
+									if not aband and ow and ow ~= my_key then
+										local suit = nil
+										pcall(function() suit = f:get_climate_suitability(c:settlement():get_climate()) end)
+										T.settle[#T.settle + 1] = { region = cn, owner = ow, at_war = (war_set[ow] == true), suit = suit }
+										if war_set[ow] then
+											T.targets[#T.targets + 1] = { region = cn, owner = ow, my_border = anchor, suit = suit }
+										end
+									end
+								end
+							end)
+						end
+					end
+				end
+			end)
+		end
 		local function friendly_near(target)
 			if T.my_field[target] then return true end
 			local a = my_adj[target]
@@ -504,10 +591,10 @@ local function gather_state()
 	S.can_capture  = V(function() return f:is_allowed_to_capture_territory() end)   -- v39: 호드(false)는 정착 조언 제외
 
 	-- 전쟁 집합 + 국경 인접 → 즉각/먼 위협, 비적대 이웃 구분
-	local war_set, war_count = key_set(function() return f:factions_at_war_with() end, 60)
+	local war_set, war_count, war_ok = key_set(function() return f:factions_at_war_with() end, 60)
 	S.war_count = war_count
 	S.war_set = war_set   -- 전략 2.0: 계획 엔진의 "아직 전쟁 중인가" 판정용
-	local neighbors = gather_neighbors(f, S.faction)
+	local neighbors, nb_ok = gather_neighbors(f, S.faction)
 	S.border_enemies, S.border_others = {}, {}
 	for k in pairs(neighbors) do
 		if war_set[k] then S.border_enemies[#S.border_enemies + 1] = k
@@ -530,8 +617,8 @@ local function gather_state()
 	-- 표시용 이름(캡)
 	S.war_names = {}
 	for i = 1, math.min(#S.border_enemies, 3) do S.war_names[#S.war_names + 1] = fname(S.border_enemies[i]) end
-	-- 위협·방어(모듈1): 포위·접근 적군·무방비 정착지
-	S.threats = gather_threats(f, war_set, S.border_enemies)
+	-- 위협·방어(모듈1): 포위·접근 적군·무방비 정착지 (+v40 영토0 앵커 스캔)
+	S.threats = gather_threats(f, war_set, S.border_enemies, S.faction)
 	-- 외교 기회(모듈4): 성사 가능한 화친/동맹
 	S.diplo = gather_diplomacy(f, war_set, S.border_enemies, S.border_others)
 	-- 속주 내부(④): 공공질서 위기
@@ -542,6 +629,11 @@ local function gather_state()
 	-- 수집 건강 상태(v35 — 3-상태 분리): '실패'와 '평온'을 구분. 실패 섹션은 조언 보류를 명시.
 	S.health = {}
 	if S.faction == nil then S.health[#S.health + 1] = "핵심 상태" end
+	-- v40: 재정·규모 원값과 국경/전쟁 수집도 감시. 이 둘이 조용히 비면 "국경 평온·전쟁 없음"으로
+	--   위장돼 v35 3-상태의 취지가 무너진다(가장 상위 입력인데 유일하게 ok가 없던 구간).
+	if S.treasury == nil or S.income == nil or S.regions == nil then S.health[#S.health + 1] = "재정·규모" end
+	if not nb_ok then S.health[#S.health + 1] = "국경" end
+	if not war_ok then S.health[#S.health + 1] = "전쟁" end
 	if not (S.threats and S.threats.ok) then S.health[#S.health + 1] = "위협" end
 	if not (S.diplo and S.diplo.ok) then S.health[#S.health + 1] = "외교" end
 	if not (S.province and S.province.ok) then S.health[#S.health + 1] = "내정" end
@@ -579,8 +671,10 @@ local function analyze(S, prof)
 	local density  = (regions > 0) and (field / regions) or 0
 	local buffer   = (income > 0) and (treasury / income) or 999
 
-	local D = { density = density, buffer = buffer, immediate = immediate, distant = distant,
-	            wars = wars, others = others, deficit = deficit, net = net }
+	-- v40: buffer의 999는 "수입 0 = 산출 불가" 센티넬. 값처럼 문구에 흘리면
+	--   무일푼에게 "금고 과다 적재(999턴치)" 같은 정반대 조언이 나간다 → known 플래그로 차단.
+	local D = { density = density, buffer = buffer, buffer_known = (income > 0), immediate = immediate,
+	            distant = distant, wars = wars, others = others, deficit = deficit, net = net }
 	local cand = {}
 
 	-- 군사 (모집/증원) — 즉각 위협을 먼 전쟁보다 크게 가중
@@ -604,8 +698,8 @@ local function analyze(S, prof)
 			local p = math.floor(15 * (SEED.buffer_target - buffer) / SEED.buffer_target + 0.5)   -- 응답곡선(v38)
 			if p > 0 then sc = sc + p; R(rs, p, string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target), true) end
 		end
-		if buffer > 15 and not deficit then sc = sc + 10; R(rs, 10, string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer), true) end
-		if immediate == 0 then sc = sc + 12; R(rs, 12, "국경 평온 — 성장 적기") end
+		if D.buffer_known and buffer > 15 and not deficit then sc = sc + 10; R(rs, 10, string.format("금고 과다 적재(%.0f턴치) — 재투자 권장", buffer), true) end
+		if regions > 0 and immediate == 0 then sc = sc + 12; R(rs, 12, "국경 평온 — 성장 적기") end   -- v40: 영토0엔 공허한 말
 		if immediate >= 2 then local p = -immediate * 4; sc = sc + p; R(rs, p, "다전선 압박으로 건설 우선순위 하락", true) end
 		local rr, ri = finish_reasons(rs)
 		cand[#cand+1] = { key = "economy", label = "경제", score = clamp(sc, 0, 100), reasons = rr, issue = ri }
@@ -753,7 +847,8 @@ local OPENERS = { "전략 브리핑", "현황 분석", "참모 보고", "정세 
 local function build_briefing(S, D, cand, prof)
 	g_click = g_click + 1
 	local opener = OPENERS[(g_click - 1) % #OPENERS + 1]
-	local buffer_str = (D.buffer >= 999) and "충분" or string.format("%.1f턴", D.buffer)
+	local buffer_str = (D.buffer_known == false) and "미상(수입 0)"          -- v40: 센티넬을 '충분'으로 읽지 않기
+		or ((D.buffer >= 999) and "충분" or string.format("%.1f턴", D.buffer))
 	local wars = (#S.war_names > 0) and table.concat(S.war_names, ", ") or "없음"
 
 	local L = {}
@@ -771,7 +866,9 @@ local function build_briefing(S, D, cand, prof)
 	end
 	if S.proj then   -- v37 전방 투영(외삽)
 		local parts = { string.format("턴당 %+d(%s) → 3턴 뒤 국고 ~%d", math.floor(S.proj.rate + 0.5), S.proj.src, S.proj.t3) }
-		if S.proj.runway then parts[#parts+1] = string.format("고갈 ~%d턴", S.proj.runway) end
+		if S.proj.broke then parts[#parts+1] = "국고 마이너스"
+		elseif S.proj.runway == 0 then parts[#parts+1] = "이번 턴 고갈"
+		elseif S.proj.runway then parts[#parts+1] = string.format("고갈 ~%d턴", S.proj.runway) end
 		if S.proj.rival_cross then parts[#parts+1] = string.format("라이벌 2배 교차 ~%d턴", S.proj.rival_cross) end
 		L[#L+1] = "🔮 투영: " .. table.concat(parts, " · ")
 	end
@@ -781,19 +878,27 @@ local function build_briefing(S, D, cand, prof)
 		local dg = diagnose(S, D)
 		if dg then L[#L+1] = "◆ 국면: " .. dg.label .. (dg.second and (" (겸 " .. dg.second .. ")") or "") .. " — " .. dg.note end
 	end
-	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0) then
+	local Tset = (S.threats and S.threats.settle) or {}
+	if S.threats and (#S.threats.sieges > 0 or #S.threats.threatened > 0 or #S.threats.targets > 0 or #Tset > 0) then
 		local parts = {}
+		-- v40: 대제국 후반에 한 줄이 수백 항목으로 부푸는 것 방지 — 8개 + "외 N".
+		local function cap(list, n, fmt)
+			local o = {}
+			for i = 1, math.min(#list, n) do o[#o+1] = fmt(list[i]) end
+			if #list > n then o[#o+1] = string.format("외 %d", #list - n) end
+			return table.concat(o, ",")
+		end
 		if #S.threats.sieges > 0 then
-			local ns = {}; for _, k in ipairs(S.threats.sieges) do ns[#ns+1] = region_disp(k) end
-			parts[#parts+1] = "포위=" .. table.concat(ns, ",")
+			parts[#parts+1] = "포위=" .. cap(S.threats.sieges, 8, function(k) return region_disp(k) end)
 		end
 		if #S.threats.threatened > 0 then
-			local ts = {}; for _, a in ipairs(S.threats.threatened) do ts[#ts+1] = region_disp(a.region) .. (a.defended and "(방어됨)" or "(무방비)") end
-			parts[#parts+1] = "위협=" .. table.concat(ts, ",")
+			parts[#parts+1] = "위협=" .. cap(S.threats.threatened, 8, function(a) return region_disp(a.region) .. (a.defended and "(방어됨)" or "(무방비)") end)
 		end
 		if #S.threats.targets > 0 then
-			local gs = {}; for _, t in ipairs(S.threats.targets) do gs[#gs+1] = region_disp(t.region) .. (t.near and "(근접)" or "") end
-			parts[#parts+1] = "표적=" .. table.concat(gs, ",")
+			parts[#parts+1] = "표적=" .. cap(S.threats.targets, 8, function(t) return region_disp(t.region) .. (t.near and "(근접)" or "") end)
+		end
+		if #Tset > 0 then   -- v40: 영토0 앵커 스캔 결과(첫 정착지 후보)
+			parts[#parts+1] = "정착후보=" .. cap(Tset, 5, function(c) return region_disp(c.region) .. (c.at_war and "" or "(비전시)") end)
 		end
 		L[#L+1] = "⚔ 지도: " .. table.concat(parts, " · ")
 	end
@@ -915,15 +1020,22 @@ local function build_prose(S, D, cand, prof)
 	local A, U, N, F = {}, {}, {}, {}
 	-- 계획이 이미 다루는 대상(팩션 키) — 하위 줄 중복 억제(같은 사실 재방송 방지)
 	local covered = {}
-	if S.plan then for _, st in ipairs(S.plan.steps or {}) do if st.key then covered[st.key] = true end end end
+	if S.plan then for _, st in ipairs(S.plan.steps or {}) do
+		if st.key then covered[st.key] = true end
+		if st.kind == "posture" and st.key == "settle" then   -- v40: 계획 ①이 지목한 정착 후보의 소유주도 커버
+			local c = pick_settle(S.threats and S.threats.settle)
+			if c and c.owner then covered[c.owner] = true end
+		end
+	end end
 	-- A: 전략 계획(2.0) — "앞으로 무엇을"의 직답
 	for _, l in ipairs(plan_prose_lines(S)) do A[#A+1] = l end
 	-- A: 전략 국면(②) — v37: 재정위기면 활주로 외삽(몇 턴 뒤 고갈)을 수치로 덧붙임
 	local dg = diagnose(S, D)
 	if dg then
 		local extra = ""
-		if dg.label == "재정 위기" and S.proj and S.proj.runway then
-			extra = string.format(" 이 추세면 ~%d턴 내 고갈됩니다.", S.proj.runway)
+		if dg.label == "재정 위기" then
+			local rp = runway_phrase(S.proj)   -- v40: 음수 국고·0턴도 정직하게(구버전은 "~-3턴 내 고갈")
+			if rp then extra = " " .. rp .. "." end
 		end
 		local sec = dg.second and string.format(" %s 조짐도 겹쳐 있습니다.", dg.second) or ""
 		A[#A+1] = string.format("【국면 · %s】 %s.%s%s", dg.label, dg.note, extra, sec)
@@ -941,7 +1053,9 @@ local function build_prose(S, D, cand, prof)
 		local subj = (tp == eco_pol) and "수입도" or "수입은"   -- 같은 방향일 때만 '도'
 		cls[#cls + 1] = clause(subj .. ((tp > 0) and " 오르는 추세" or " 꺾이는 추세"), "n", tp)
 	end
-	if D.immediate >= 2 then cls[#cls + 1] = clause("국경에서 여러 세력의 압박을 받고 있", "v", -1)
+	if num(S.regions, 0) == 0 then   -- v40: 영토가 없으면 '국경 평온'은 공허한 참 — 실상을 말한다
+		cls[#cls + 1] = clause("아직 정착지가 없어 지킬 국경도 없", "v", -1)
+	elseif D.immediate >= 2 then cls[#cls + 1] = clause("국경에서 여러 세력의 압박을 받고 있", "v", -1)
 	elseif D.immediate == 1 then cls[#cls + 1] = clause(string.format("국경에서 %s의 압박을 받고 있", tostring(S.war_names[1] or "적")), "v", -1)
 	elseif D.wars > 0 then cls[#cls + 1] = clause("전쟁 중에도 국경은 아직 평온", "h", 1)
 	else cls[#cls + 1] = clause("국경은 평온", "h", 1) end
@@ -951,8 +1065,9 @@ local function build_prose(S, D, cand, prof)
 		U[#U+1] = string.format("⚠ 데이터 — 이번 클릭에 %s 정보를 읽지 못했습니다. 해당 영역은 판단을 보류합니다(조용함≠안전).", table.concat(S.health, "·"))
 	end
 	-- U: 재정 활주로(v37 외삽) — 국면이 이미 재정위기로 말한 경우는 제외(중복 방지)
-	if S.proj and S.proj.runway and S.proj.runway <= 3 and (not dg or dg.label ~= "재정 위기") then
-		U[#U+1] = string.format("재정 — 이 추세면 약 %d턴 뒤 국고가 바닥납니다(턴당 %+d). 지출을 줄이거나 수입을 확보하세요.", S.proj.runway, math.floor(S.proj.rate + 0.5))
+	if S.proj and (S.proj.broke or (S.proj.runway and S.proj.runway <= 3)) and (not dg or dg.label ~= "재정 위기") then
+		U[#U+1] = string.format("재정 — %s(턴당 %+d). 지출을 줄이거나 수입을 확보하세요.",
+			runway_phrase(S.proj, true), math.floor(S.proj.rate + 0.5))
 	end
 	-- U/N: 위협(모듈1) — 포위·무방비=긴급. 방어된 위협은 계획 미커버 대상만(중복 억제).
 	if S.threats then
@@ -1203,7 +1318,11 @@ local function project(S)
 	end
 	P.rate, P.src = rate, src
 	P.t3 = math.floor(g + rate * 3 + 0.5)             -- 3턴 뒤 국고(외삽)
-	if rate < -1 then P.runway = math.floor(g / -rate) end   -- 활주로: 이 추세로 버티는 턴 수
+	-- 활주로: 이 추세로 버티는 턴 수. v40 — 이미 마이너스면 '몇 턴 뒤 고갈'이 성립하지 않고
+	--   (구버전은 "~-3턴 내 고갈"을 출력), 1턴 미만이면 0으로 두고 소비처에서 "이번 턴" 문구로.
+	if rate < -1 then
+		if g <= 0 then P.broke = true else P.runway = math.floor(g / -rate) end
+	end
 	-- 라이벌 2배 교차: 라이벌·내 영토 증가율로 "우리의 2배가 되는 시점" 외삽
 	if S.snowball and S.rival_growth and S.rival_growth.dt and S.rival_growth.dt >= 2 then
 		local rr = S.rival_growth.growth / S.rival_growth.dt
@@ -1538,13 +1657,22 @@ local function plan_generate(S, dglabel)
 		steps[#steps + 1] = { kind = "prov", key = bp.key, base = bp.total, last = bp.owned, created = num(S.turn, 0) }
 	end
 	-- ③ 대비/자세 (상한 3)
+	-- v40: 폴백이 국면을 무시하던 결함 수정. 화친 상대가 없거나 적 정보 조회가 실패해 다른 단계가
+	--   하나도 안 서면, 파산 직전·수도 포위 상황에서도 "다음 전쟁을 설계"가 나왔다(재현 확인).
+	--   생존 국면이면 미래 대비(prep)보다 당면 자세가 먼저다.
 	if #steps < 3 then
-		if ST.endgame and ST.endgame.armed then
+		local crisis = (dglabel == "재정 위기" and "retrench") or (dglabel == "궁지" and "hold") or nil
+		if #steps == 0 and crisis then
+			steps[#steps + 1] = { kind = "posture", key = crisis, base = 0, last = 0, created = num(S.turn, 0) }
+		elseif ST.endgame and ST.endgame.armed then
 			steps[#steps + 1] = { kind = "prep", key = ST.endgame.armed.scenario, base = ST.endgame.armed.turn or 0, last = 0, created = num(S.turn, 0) }
 		elseif dglabel == "과확장" then
 			steps[#steps + 1] = { kind = "posture", key = "consolidate", base = 0, last = 0, created = num(S.turn, 0) }
 		elseif #steps == 0 then
-			steps[#steps + 1] = { kind = "posture", key = (S.weak_target and "expand" or "tech"), base = 0, last = 0, created = num(S.turn, 0) }
+			local key = "tech"
+			if num(S.regions, 0) == 0 and S.can_capture == false then key = "raid"   -- 영구 호드(비스트맨 등)
+			elseif S.weak_target then key = "expand" end
+			steps[#steps + 1] = { kind = "posture", key = key, base = 0, last = 0, created = num(S.turn, 0) }
 		end
 	end
 	return { steps = steps }
@@ -1691,8 +1819,20 @@ function plan_prose_lines(S)
 				expand = "확장 준비 — 약한 이웃 방면으로 다음 전쟁을 설계",
 				tech = "내실 — 기술·경제 축적으로 다음 도약을 준비",
 				settle = "거점 확보 — 아직 정착지가 없습니다. 첫 정착지를 점령해 기반부터 만드세요",
+				retrench = "긴축 — 적자를 멈추는 게 먼저입니다. 유지비 큰 군단을 줄이고 불필요한 지출을 정리하세요",   -- v40
+				hold = "사수 — 전선을 좁히고 핵심 정착지에 병력을 모아 버티세요",                                    -- v40
+				raid = "약탈 — 정착하지 않는 종족입니다. 약탈·파괴로 자금과 성장을 벌어들이세요",                    -- v40
 			}
 			line = NUMS[i] .. " " .. (m[s.key] or "자세 정비") .. "."
+			-- v40: 첫 정착지를 '어디'로 잡을지까지 — 영토0 앵커 스캔 결과에서 지목.
+			local c = (s.key == "settle") and pick_settle(S.threats and S.threats.settle) or nil
+			if c then
+				local tags = {}
+				if not c.at_war then tags[#tags + 1] = "점령하려면 선전포고 필요" end
+				if c.suit == "suitability_verypoor" then tags[#tags + 1] = "기후 부적합 — 약탈 권장" end
+				line = line .. string.format(" 인근 후보: %s(%s)%s.", region_disp(c.region), fname(c.owner),
+					(#tags > 0) and (" — " .. table.concat(tags, ", ")) or "")
+			end
 		end
 		if line then L[#L + 1] = line end
 	end
@@ -1995,6 +2135,8 @@ if ADVISOR_TEST_EXPORTS then
 	CA_TEST = {
 		num = num, clamp = clamp, sev = sev, urgency = urgency,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
+		key_set = key_set, runway_phrase = runway_phrase,   -- v40
+		gather_threats = gather_threats,                    -- v40: 영토0 앵커 스캔을 스텁으로 검증
 		clause = clause, join_clauses = join_clauses,
 		fname = fname, region_disp = region_disp, first_names = first_names,
 		get_profile = get_profile,

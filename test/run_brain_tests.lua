@@ -771,6 +771,192 @@ do
 	ok(has(p2, "기회 — 경제: 국경 평온, 성장 적기"), "기회: 문제형 없으면 라벨 전환", p2:match("기회[^\n]*") or p2:match("보강[^\n]*"))
 end
 
+-- ══ 14. v40 — 코드리뷰 후속: 폴백 자세·활주로·센티넬·수집실패·호드 ═══
+log("== 14. v40 코드리뷰 수정 ==")
+do
+	-- ① 계획 폴백이 국면을 무시하던 결함: 파산 직전에 "다음 전쟁 설계"가 나오던 케이스
+	local Sc = baseS{ treasury = 800, income = 3000, net = -700, losing = true,
+		weak_target = "wh_main_dwf_dwarfs", weak_target_r = 2,
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local pc = T.plan_generate(Sc, "재정 위기")
+	ok(pc.steps[1] and pc.steps[1].key == "retrench", "폴백: 재정위기 → 긴축(확장 아님)", pc.steps[1] and tostring(pc.steps[1].key))
+	Sc.plan = pc
+	local pcl = table.concat(T.plan_prose_lines(Sc), "\n")
+	ok(has(pcl, "긴축 — 적자를 멈추는 게 먼저입니다") and not has(pcl, "다음 전쟁을 설계"), "폴백: 긴축 문구", pcl:match("①[^\n]*"))
+	-- 궁지(포위) + 적 정보 조회 실패 → 사수
+	local Sh = baseS{ immediate = 1, border_enemies = { "e1" }, war_names = { "E" }, war_set = { e1 = true },
+		threats = { sieges = { "cap" }, threatened = {}, targets = {}, my_field = {} },
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local ph = T.plan_generate(Sh, "궁지")
+	ok(ph.steps[1] and ph.steps[1].key == "hold", "폴백: 궁지 → 사수", ph.steps[1] and tostring(ph.steps[1].key))
+	-- 생존 국면이라도 다른 단계가 서면 그쪽이 우선(자세는 폴백일 뿐)
+	local Se = baseS{ immediate = 1, border_enemies = { "e2" }, war_set = { e2 = true },
+		strat = { enemy = { e2 = { regions = 2 } }, provinces = {}, armies = {}, endgame = { active = {} } } }
+	ok(T.plan_generate(Se, "궁지").steps[1].kind == "elim", "폴백: 실제 단계가 있으면 자세로 안 떨어짐")
+	-- 영구 호드(점령 불가) → 약탈 자세
+	local Sr = baseS{ regions = 0, my_regions = 0, can_capture = false,
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local pr = T.plan_generate(Sr, "초반 정착")
+	ok(pr.steps[1] and pr.steps[1].key == "raid", "폴백: 영구 호드 → 약탈", pr.steps[1] and tostring(pr.steps[1].key))
+end
+do
+	-- ② 활주로: 음수 국고 / 이번 턴 / 정상 3분기
+	ok(T.runway_phrase({ broke = true }) == "국고가 이미 마이너스입니다", "활주로: 마이너스 국고")
+	ok(T.runway_phrase({ runway = 0 }) == "이 추세면 이번 턴에 바닥납니다", "활주로: 0턴 축약")
+	ok(T.runway_phrase({ runway = 0 }, true) == "이 추세면 이번 턴에 국고가 바닥납니다", "활주로: 0턴 완문")
+	ok(T.runway_phrase({ runway = 4 }) == "이 추세면 ~4턴 내 고갈됩니다", "활주로: 정상 축약")
+	ok(T.runway_phrase(nil) == nil and T.runway_phrase({}) == nil, "활주로: 미상이면 무문구")
+	-- project: 국고 음수면 runway 대신 broke
+	local Sb = baseS{ treasury = -1200, income = 1000, net = -400, losing = true,
+		trend = { dt = 2, treasury = -900, regions = 0, income = -50 } }
+	local Pb = T.project(Sb)
+	ok(Pb.broke == true and Pb.runway == nil, "투영: 음수 국고 → broke(음수 활주로 금지)", tostring(Pb.runway))
+	Sb.proj = Pb
+	local _, _, _, prose_b, brief_b = run(Sb)
+	ok(not prose_b:find("~-", 1, true) and has(prose_b, "국고가 이미 마이너스입니다"), "투영: 산문에 음수턴 없음", prose_b:match("[^\n]*마이너스[^\n]*"))
+	ok(has(brief_b, "국고 마이너스"), "투영: 브리핑 표기")
+	-- 국고 30 / 턴당 -400 → 0턴
+	local S0 = baseS{ treasury = 30, income = 1000, net = -400, losing = true,
+		trend = { dt = 2, treasury = -800, regions = 0, income = 0 } }
+	S0.proj = T.project(S0)
+	ok(S0.proj.runway == 0, "투영: 1턴 미만 → 0", tostring(S0.proj.runway))
+	local _, _, _, prose_0, brief_0 = run(S0)
+	ok(has(prose_0, "이번 턴에") and not has(prose_0, "~0턴"), "투영: 0턴 문구 교정", prose_0:match("【국면[^\n]*"))
+	ok(has(brief_0, "이번 턴 고갈") and not has(brief_0, "고갈 ~0턴"), "투영: 브리핑 0턴 표기", brief_0:match("🔮[^\n]*"))
+end
+do
+	-- ③ 수입 0 → buffer 999 센티넬이 판단·표시로 새지 않는가
+	local Sz = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1,
+		treasury = 2500, income = 0, net = 0, losing = false }
+	local D, cand, _, prose, brief = run(Sz)
+	ok(D.buffer_known == false, "센티넬: 수입0 → buffer 미상 표시")
+	local eco
+	for _, c in ipairs(cand) do if c.key == "economy" then eco = c end end
+	ok(not (eco and has(table.concat(eco.reasons, ";"), "금고 과다")), "센티넬: 무일푼에 '금고 과다' 금지",
+		eco and table.concat(eco.reasons, ";"))
+	ok(not has(prose, "금고 과다"), "센티넬: 산문에도 없음")
+	ok(has(brief, "재정버퍼 미상(수입 0)") and not has(brief, "재정버퍼 충분"), "센티넬: 브리핑 '미상' 표기", brief:match("파생[^\n]*"))
+	-- 수입 정상 + 실제 과적재는 그대로 유지(과교정 방지)
+	local Sr = baseS{ treasury = 60000, income = 3000, net = 2000 }
+	local _, cand2 = run(Sr)
+	local eco2
+	for _, c in ipairs(cand2) do if c.key == "economy" then eco2 = c end end
+	ok(eco2 and has(table.concat(eco2.reasons, ";"), "금고 과다"), "센티넬: 진짜 과적재는 유지")
+end
+do
+	-- ④ 수집 실패 신호: key_set이 실패를 ok=false로 알리는가(빈 집합=평온 위장 방지)
+	local set, cnt, kok = T.key_set(function() error("boom") end)
+	ok(kok == false and cnt == 0, "수집: 조회 실패 → ok=false", tostring(kok))
+	local set2, cnt2, kok2 = T.key_set(function()
+		return { num_items = function() return 2 end,
+			item_at = function(_, i) return { name = function() return "f" .. i end } end }
+	end)
+	ok(kok2 == true and cnt2 == 2 and set2.f0 and set2.f1, "수집: 정상 조회 → ok=true+집합")
+	-- 산문 신뢰성 줄이 새 라벨(국경/전쟁)을 그대로 실어내는가
+	local Sf = baseS{ health = { "국경", "전쟁" } }
+	local _, _, _, prose_f = run(Sf)
+	ok(has(prose_f, "국경·전쟁 정보를 읽지 못했습니다"), "수집: 신뢰성 줄에 국경·전쟁", prose_f:match("⚠[^\n]*"))
+end
+do
+	-- ⑤ 영토0 앵커 스캔 소비: 첫 정착지 후보 지목
+	local Ss = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1,
+		threats = { sieges = {}, threatened = {}, targets = {}, my_field = {},
+			settle = { { region = "reg_bad", owner = "own_a", at_war = true, suit = "suitability_verypoor" },
+			           { region = "reg_good", owner = "own_b", at_war = true, suit = "suitability_good" } } } }
+	Ss.plan = T.plan_generate(Ss, "초반 정착")
+	local pl = table.concat(T.plan_prose_lines(Ss), "\n")
+	ok(has(pl, "거점 확보") and has(pl, "인근 후보: Good"), "호드: 첫 정착지 후보 지목", pl:match("①[^\n]*"))
+	-- 전시 상대가 없으면 비전시 후보 + 선전포고 경고
+	local Sn = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1,
+		threats = { sieges = {}, threatened = {}, targets = {}, my_field = {},
+			settle = { { region = "reg_n", owner = "own_c", at_war = false, suit = "suitability_good" } } } }
+	Sn.plan = T.plan_generate(Sn, "초반 정착")
+	local pl2 = table.concat(T.plan_prose_lines(Sn), "\n")
+	ok(has(pl2, "선전포고 필요"), "호드: 비전시 후보엔 선전포고 경고", pl2:match("①[^\n]*"))
+	-- 부적합만 있으면 그거라도 지목하되 약탈 권고
+	local Sp = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1,
+		threats = { sieges = {}, threatened = {}, targets = {}, my_field = {},
+			settle = { { region = "reg_bad", owner = "own_a", at_war = true, suit = "suitability_verypoor" } } } }
+	Sp.plan = T.plan_generate(Sp, "초반 정착")
+	ok(has(table.concat(T.plan_prose_lines(Sp), "\n"), "기후 부적합 — 약탈 권장"), "호드: 부적합 후보는 약탈 권고")
+	-- 후보가 없으면 기존 일반 문구 유지(무예외)
+	local Se = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1 }
+	Se.plan = T.plan_generate(Se, "초반 정착")
+	ok(has(table.concat(T.plan_prose_lines(Se), "\n"), "첫 정착지를 점령해"), "호드: 후보 없으면 일반 문구")
+	-- 계획 ①이 지목한 후보를 '확장 기회' 줄이 되풀이하지 않는가(중복 방송 억제)
+	local Sd = baseS{ regions = 0, my_regions = 0, provinces = 0, generals = 1,
+		threats = { sieges = {}, threatened = {}, my_field = {},
+			targets = { { region = "reg_good", owner = "own_b", my_border = "a", near = true, suit = "suitability_good" } },
+			settle = { { region = "reg_good", owner = "own_b", at_war = true, suit = "suitability_good" } } } }
+	Sd.plan = T.plan_generate(Sd, "초반 정착")
+	local _, _, _, prose_d = run(Sd)
+	ok(has(prose_d, "인근 후보: Good") and not has(prose_d, "확장 기회"), "호드: 계획이 지목한 후보는 확장기회 줄에서 중복 억제",
+		prose_d:match("확장[^\n]*"))
+	-- 영토 0이면 '국경 평온'이라는 공허한 말 대신 실상
+	ok(has(prose_d, "지킬 국경도 없") and not has(prose_d, "국경은 평온"), "호드: 공허한 '국경 평온' 제거", prose_d:match("종합[^\n]*") or prose_d:match("[^\n]*턴 현재[^\n]*"))
+	ok(not has(prose_d, "국경 평온 — 성장 적기") and not has(prose_d, "국경 평온, 성장 적기"), "호드: 경제 근거도 '국경 평온' 배제", prose_d:match("기회[^\n]*") or prose_d:match("보강[^\n]*"))
+	-- 브리핑 ⚔ 지도 줄에 정착후보 노출 + 목록 상한
+	local _, _, _, _, brief = run(Ss)
+	ok(has(brief, "정착후보=") and has(brief, "Good"), "호드: 브리핑 정착후보 표기", brief:match("⚔[^\n]*"))
+	local many = { sieges = {}, threatened = {}, my_field = {}, targets = {} }
+	for i = 1, 20 do many.targets[i] = { region = "r" .. i, owner = "o", my_border = "b", near = true } end
+	local _, _, _, _, brief2 = run(baseS{ threats = many })
+	ok(has(brief2, "외 12"), "지도 줄: 8개 + '외 N' 상한", brief2:match("⚔[^\n]*"))
+end
+
+do
+	-- ⑤-2 앵커 스캔 자체(게임 API 스텁) — 영토0에서 실제로 후보가 잡히는지.
+	--   ※ 스텁은 형태만 재현한다. 실제 인터페이스 동작은 인게임 프루프로만 확정(짐작 금지).
+	local function mklist(t) return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end } end
+	local function mkregion(name, owner, opts)
+		opts = opts or {}
+		local r
+		r = {
+			name = function() return name end,
+			is_null_interface = function() return false end,
+			is_abandoned = function() return opts.abandoned == true end,
+			owning_faction = function() return { is_null_interface = function() return false end, name = function() return owner end } end,
+			adjacent_region_list = function() return mklist(opts.adj or {}) end,
+			settlement = function() return { get_climate = function() return opts.climate or "ok" end } end,
+			garrison_residence = function() return nil end,
+		}
+		return r
+	end
+	local nbr1 = mkregion("reg_enemy", "foe")                        -- 전쟁 중 적 소유
+	local nbr2 = mkregion("reg_neutral", "neu")                      -- 비전시
+	local nbr3 = mkregion("reg_ruin", "gone", { abandoned = true })  -- 폐허(제외 대상)
+	local anchor = mkregion("reg_anchor", "foe", { adj = { nbr1, nbr2, nbr3 }, climate = "bad" })
+	local ch = { has_region = function() return true end, region = function() return anchor end }
+	local mf = { has_general = function() return true end, is_armed_citizenry = function() return false end,
+		general_character = function() return ch end }
+	local f = {
+		region_list = function() return mklist({}) end,              -- 영토 0
+		military_force_list = function() return mklist({ mf }) end,
+		get_climate_suitability = function(_, c) return (c == "bad") and "suitability_verypoor" or "suitability_good" end,
+	}
+	local Tt = T.gather_threats(f, { foe = true }, { "foe" }, "me")
+	ok(Tt.ok == true, "앵커: 수집 성공")
+	local names, byname = {}, {}
+	for _, c in ipairs(Tt.settle or {}) do names[#names + 1] = c.region; byname[c.region] = c end
+	table.sort(names)
+	ok(#names == 3 and byname.reg_anchor and byname.reg_enemy and byname.reg_neutral,
+		"앵커: 서 있는 지역+인접 후보 수집", table.concat(names, ","))
+	ok(byname.reg_ruin == nil, "앵커: 폐허 제외(식민 가능 미실측)")
+	ok(byname.reg_enemy and byname.reg_enemy.at_war == true and byname.reg_neutral.at_war == false, "앵커: 전시/비전시 구분")
+	ok(byname.reg_anchor and byname.reg_anchor.suit == "suitability_verypoor", "앵커: 기후 적합성 부착", byname.reg_anchor and tostring(byname.reg_anchor.suit))
+	local tg = {}
+	for _, t in ipairs(Tt.targets or {}) do tg[t.region] = t end
+	ok(tg.reg_enemy and tg.reg_enemy.near == true and tg.reg_neutral == nil, "앵커: 전쟁 상대만 공격 표적 + 근접 판정")
+	ok(Tt.my_field["reg_anchor"] == true, "앵커: 내 야전군 위치 기록")
+	-- 영토가 있으면 앵커 스캔은 돌지 않는다(기존 경로 불변)
+	local owned = mkregion("reg_mine", "me", { adj = { nbr1 } })
+	local f2 = { region_list = function() return mklist({ owned }) end,
+		military_force_list = function() return mklist({ mf }) end,
+		get_climate_suitability = function() return "suitability_good" end }
+	local T2 = T.gather_threats(f2, { foe = true }, { "foe" }, "me")
+	ok(#(T2.settle or {}) == 0, "앵커: 영토 있으면 미작동(기존 경로 유지)", #(T2.settle or {}))
+end
+
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
 local report = table.concat(R.lines, "\n")
 local fh = real_open(ROOT .. "/test/out_brain_report.txt", "w")
