@@ -40,16 +40,19 @@ dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_military.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_stubs.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_war.lua")
 dofile(ROOT .. "/src/script/campaign/mod/za_faction_profiles.lua")
 dofile(ROOT .. "/src/script/campaign/mod/campaign_advisor.lua")
 assert(CA_TEST, "CA_TEST export 실패")
 assert(CA_TEST_INTERNAL, "CA_TEST_INTERNAL export 실패")
 assert(CA_TEST_MILITARY, "CA_TEST_MILITARY export 실패")
 assert(CA_TEST_DIPLO, "CA_TEST_DIPLO export 실패")
+assert(CA_TEST_WAR, "CA_TEST_WAR export 실패")
 local T = CA_TEST
 local TI = CA_TEST_INTERNAL
 local TM = CA_TEST_MILITARY
 local TD = CA_TEST_DIPLO
+local TW = CA_TEST_WAR
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -997,12 +1000,12 @@ do
 
 	-- 미구현 탭은 '비어 있음'이 아니라 '아직 없음 + 무엇이 들어갈지'를 말한다
 	local stub = nil
-	for _, d in ipairs(doms) do if d.id == "war" then stub = d end end
+	for _, d in ipairs(doms) do if d.id == "tech" then stub = d end end
 	local sline = table.concat(stub.build(), "\n")
-	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "force_gold_value"),
+	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "has_technology"),
 		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
 	-- 완성된 탭은 자리표시 문구가 남아 있으면 안 된다(등록 중복·삭제 누락 감지)
-	for _, id in ipairs({ "internal", "army", "diplo" }) do
+	for _, id in ipairs({ "internal", "army", "diplo", "war" }) do
 		local d2 = nil
 		for _, d in ipairs(doms) do if d.id == id then d2 = d end end
 		ok(d2 ~= nil, "완성 탭 등록됨: " .. id)
@@ -1344,6 +1347,88 @@ do
 	ok(has(table.concat(TD.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "외교: 팩션 조회 실패 명시")
 
 	cm.get_local_faction, cm.get_faction, cm.cai_evaluate_quick_deal_action = saved_getf, saved_getfac, saved_cai
+end
+
+-- ── 18. 전쟁 탭 (v48) ─────────────────────────────────────────────────
+do
+	-- 이 탭은 게임 API를 부르지 않는다 — 전부 S에서 온다. 그래서 스텁이 필요 없다.
+	local function S_of(o)
+		return {
+			war_set = o.war_set, border_enemies = o.border or {},
+			strat = { my_strength = o.mine, enemy = o.enemy or {} },
+			threats = { ok = o.tok ~= false, sieges = o.sieges or {}, threatened = o.threat or {},
+			            targets = o.targets or {}, settle = {} },
+			diplo = o.diplo, plan = o.plan,
+		}
+	end
+	local function txt(o) return table.concat(TW.build(S_of(o), {}), "\n") end
+
+	-- ① 승산 판정 — 전력비를 모르면 모른다고 한다
+	ok(TW.verdict(nil, nil):find("말할 수 없습니다") ~= nil, "전쟁: 전력 미상이면 승산 판정 보류")
+	ok(TW.verdict(0.5, 1000):find("불리") ~= nil, "전쟁: 0.8 미만 = 불리")
+	ok(TW.verdict(2.0, 1000):find("우세") ~= nil, "전쟁: 1.5 이상 = 우세")
+	ok(TW.verdict(2.0, 0):find("군비가 말랐") ~= nil, "전쟁: 우세 + 군비 고갈 = 몰아칠 때")
+	ok(TW.verdict(1.0, 0):find("소모전이면 우리가 이깁니다") ~= nil, "전쟁: 비등 + 적 군비 고갈")
+	ok(TW.verdict(1.0, 5000):find("도박") ~= nil, "전쟁: 비등 + 적 군비 있음 = 도박")
+
+	-- ② 전선 정렬: 잔여 정착지 적은 쪽 먼저, 국경 밖은 수만 센다
+	local S1 = S_of{ mine = 18000, border = { "big", "small" },
+		war_set = { big = true, small = true, faraway = true },
+		enemy = { big = { regions = 9, strength = 30000, rank = 5, war_chest = 4000 },
+		          small = { regions = 2, strength = 6000, rank = 40, war_chest = 0 } } }
+	local fr, far = TW.fronts_of(S1)
+	ok(#fr == 2 and fr[1].key == "small", "전쟁: 잔여 정착지 적은 전선 먼저", fr[1] and fr[1].key)
+	ok(far == 1, "전쟁: 국경 밖 전선은 상세 없이 수만", far)
+	ok(math.abs(fr[1].ratio - 3.0) < 0.001, "전쟁: 전력비 = 내 전력 / 적 전력", fr[1].ratio)
+
+	-- ③ 본문: 머리줄·전선·계획 표시·정리 권고
+	local out1 = txt{ mine = 18000, border = { "big", "small" },
+		war_set = { big = true, small = true },
+		enemy = { big = { regions = 9, strength = 30000, war_chest = 4000 },
+		          small = { regions = 2, strength = 6000, war_chest = 0 } },
+		targets = { { region = "reg_a", owner = "small", near = true } },
+		plan = { steps = { { kind = "elim", key = "small" } } },
+		diplo = { ok = true, peace = { "big" } } }
+	ok(has(out1, "【전쟁】") and has(out1, "전선 2") and has(out1, "우리 전력 18,000"), "전쟁: 머리줄", out1:match("^[^\n]*"))
+	ok(has(out1, "계획상 1순위"), "전쟁: 계획이 지목한 표적 표시")
+	ok(has(out1, "잔여 2정착지") and has(out1, "0.60배"), "전쟁: 전선 수치")
+	ok(has(out1, "지금이 정리할 때") and has(out1, "다음 수: "), "전쟁: 우세 전선은 정리 권고 + 다음 수")
+	ok(has(out1, "화친이 성사되니 지금 접으세요"), "전쟁: 불리 전선에 화친이 되면 그것부터")
+
+	-- ④ 방어가 공격보다 먼저
+	local out2 = txt{ mine = 9000, border = { "e1" }, war_set = { e1 = true },
+		enemy = { e1 = { regions = 1, strength = 1000, war_chest = 0 } },
+		sieges = { "wh_main_reikland_altdorf" },
+		threat = { { region = "reg_x", faction = "e1", on_land = true, defended = false } },
+		targets = { { region = "reg_y", owner = "e1", near = true } } }
+	ok(out2:find("포위를 먼저 풀어야", 1, true) < out2:find("지금이 정리할 때", 1, true),
+		"전쟁: 포위 해제가 공세보다 위에 온다")
+	ok(has(out2, "무방비"), "전쟁: 무방비 지역 표시")
+	ok(has(out2, "근처에 아군이 없습니다"), "전쟁: 무방비 경고")
+
+	-- ⑤ 전쟁이 없으면 없다고 말한다
+	local out3 = txt{ mine = 5000, war_set = {} }
+	ok(has(out3, "전쟁 중인 상대가 없습니다") and has(out3, "내정·확장에 집중"),
+		"전쟁: 평시에는 할 일 없음을 명시", out3:match("^[^\n]*"))
+
+	-- ⑥ 전쟁은 없는데 위협만 있는 경우(선전포고 직전 등)
+	local out4 = txt{ mine = 5000, war_set = {},
+		threat = { { region = "reg_z", faction = "e9", on_land = false, defended = true } } }
+	ok(has(out4, "아래 위협이 잡혔습니다") and has(out4, "인접에 적군"), "전쟁: 전쟁 없이 위협만 있을 때")
+
+	-- ⑦ 위협 수집 실패는 숨기지 않는다
+	local out5 = txt{ tok = false, war_set = {} }
+	ok(has(out5, "판단을 보류"), "전쟁: 위협 수집 실패 = 보류 명시")
+
+	-- ⑧ 전력비의 한계를 본문에 밝힌다
+	ok(has(out1, "거리·배치를 반영하지 않으니"), "전쟁: 전력비가 전체 대 전체임을 명시")
+
+	-- ⑨ 조사
+	local out6 = txt{ mine = 100, border = { "wh_main_grn_greenskins" },
+		war_set = { wh_main_grn_greenskins = true },
+		enemy = { wh_main_grn_greenskins = { regions = 3, strength = 9000 } } }
+	ok(has(out6, "그린스킨은") and not has(out6, "그린스킨는"), "전쟁: 받침 있는 이름 → '은'",
+		out6:match("[^\n]*그린스킨[^\n]*배로[^\n]*"))
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
