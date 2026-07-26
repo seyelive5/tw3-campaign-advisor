@@ -32,11 +32,18 @@ cm = {
 }
 
 -- ── 모드 로드 ─────────────────────────────────────────────────────────
-dofile(ROOT .. "/src/script/campaign/mod/za_faction_profiles.lua")
+-- 순서는 인게임과 같게: core:load_mods는 파일명 순이라 advisor_dom_*가
+-- campaign_advisor보다 먼저 온다 → 도메인이 CA_U를 로드 시점에 잡으면 nil이 된다.
+-- 같은 순서로 실행해 그 실수를 하니스가 잡게 한다.
 ADVISOR_TEST_EXPORTS = true
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_stubs.lua")
+dofile(ROOT .. "/src/script/campaign/mod/za_faction_profiles.lua")
 dofile(ROOT .. "/src/script/campaign/mod/campaign_advisor.lua")
 assert(CA_TEST, "CA_TEST export 실패")
+assert(CA_TEST_INTERNAL, "CA_TEST_INTERNAL export 실패")
 local T = CA_TEST
+local TI = CA_TEST_INTERNAL
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -955,6 +962,144 @@ do
 		get_climate_suitability = function() return "suitability_good" end }
 	local T2 = T.gather_threats(f2, { foe = true }, { "foe" }, "me")
 	ok(#(T2.settle or {}) == 0, "앵커: 영토 있으면 미작동(기존 경로 유지)", #(T2.settle or {}))
+end
+
+--[[───────────────────────────────────────────────────────────────────
+  15. v41 셸(탭·페이지·레지스트리) + 내정 탭
+  ※ 게임 UI(CreateComponent·측정)는 여기서 못 잡는다 — 인게임 프루프 전용.
+     여기서 잡는 것: 줄 분해·도메인 등록/정렬·내정 수집 및 문장.
+───────────────────────────────────────────────────────────────────]]
+do
+	-- 줄 분해
+	local sl = T.split_lines
+	local a = sl("첫줄\n둘째\n")
+	ok(#a == 2 and a[1] == "첫줄" and a[2] == "둘째", "split_lines: 기본", #a)
+	ok(#sl("") == 0 and #sl(nil) == 0, "split_lines: 빈 입력/nil 안전")
+	local b = sl("a\n\nb\n\n\n")
+	ok(#b == 3 and b[2] == "", "split_lines: 중간 빈 줄 보존 · 끝 빈 줄 제거", #b)
+
+	-- 도메인 등록/정렬 (파일 로드 순서와 무관하게 order대로)
+	local doms = T.domains_sorted()
+	local ids = {}
+	for _, d in ipairs(doms) do ids[#ids + 1] = d.id end
+	ok(table.concat(ids, ",") == "grand,internal,diplo,tech,army,war,agent",
+		"도메인: order 순 정렬(로드 순서 무관)", table.concat(ids, ","))
+	ok(#doms == 7, "도메인: 7개 등록", #doms)
+	local titles = {}
+	for _, d in ipairs(doms) do titles[#titles + 1] = d.title end
+	ok(table.concat(titles, "") == "대전략내정외교연구군사전쟁기타", "도메인: 탭 제목", table.concat(titles, "/"))
+
+	-- 미구현 탭은 '비어 있음'이 아니라 '아직 없음 + 무엇이 들어갈지'를 말한다
+	local stub = nil
+	for _, d in ipairs(doms) do if d.id == "army" then stub = d end end
+	local sline = table.concat(stub.build(), "\n")
+	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "unit_list"),
+		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
+end
+
+do
+	-- 숫자 서식
+	ok(TI.comma(1240) == "1,240" and TI.comma(1234567) == "1,234,567" and TI.comma(-980) == "-980",
+		"내정: 천단위 구분", TI.comma(1234567))
+	ok(TI.signed(8) == "+8" and TI.signed(-12) == "-12" and TI.signed(0) == "+0", "내정: 부호 표기", TI.signed(-12))
+
+	-- 게임 API 스텁(형태만 재현 — 실제 동작은 인게임 프루프로 확정)
+	local function mklist(t) return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end } end
+	local function mkslot(active, has_b) return { active = function() return active end, has_building = function() return has_b end } end
+	local function mkreg(o)
+		return {
+			name = function() return o.key end,
+			province_name = function() return o.prov end,
+			is_province_capital = function() return o.capital == true end,
+			gdp = function() return o.gdp end,
+			public_order = function() return o.po end,
+			faction_province_growth_per_turn = function() return o.growth end,
+			num_buildings = function() return o.nbuild end,
+			has_development_points_to_upgrade = function() return o.dev == true end,
+			garrison_residence = function()
+				return { is_null_interface = function() return false end, is_under_siege = function() return o.siege == true end }
+			end,
+			slot_list = function() return mklist(o.slots or {}) end,
+		}
+	end
+	local function mkfac(regions, F)
+		F = F or {}
+		return {
+			region_list = function() return mklist(regions) end,
+			tax_level = function() return F.tax end,
+			num_complete_provinces = function() return F.complete end,
+			num_provinces = function() return F.provinces end,
+			total_food = function() return F.food end,
+			food_production = function() return F.food_prod end,
+			food_consumption = function() return F.food_use end,
+			has_food_shortages = function() return F.food_short == true end,
+			num_faction_slaves = function() return F.slaves end,
+			max_faction_slaves = function() return F.slaves_max end,
+		}
+	end
+	local saved_getf = cm.get_local_faction
+	local function with(fac, S, B) cm.get_local_faction = function() return fac end; return table.concat(TI.build(S, B), "\n") end
+
+	-- ① 정상 제국: 두 지역, 치안 위기 + 빈칸 + 개발포인트 + 속주 진행
+	local reg1 = mkreg{ key = "wh_main_reg_altdorf", prov = "wh_main_prov_reikland", capital = true, gdp = 1240,
+		po = -60, growth = 8, nbuild = 5, dev = true,
+		slots = { mkslot(true, true), mkslot(true, false), mkslot(true, false), mkslot(false, false) } }
+	local reg2 = mkreg{ key = "wh_main_reg_helmgart", prov = "wh_main_prov_reikland", gdp = 300, po = 4, growth = 0,
+		nbuild = 2, slots = { mkslot(true, true) } }
+	local S1 = { strat = { provinces = { { key = "wh_main_prov_reikland", owned = 3, total = 4,
+		miss_region = "wh_main_reg_ubersreik", miss_owner = "wh_main_grn_greenskins" } } } }
+	local out1 = with(mkfac({ reg1, reg2 }, { provinces = 1, complete = 0, tax = 3 }), S1, {})
+	ok(has(out1, "【내정】") and has(out1, "영토 2") and has(out1, "빈 건설칸 2"),
+		"내정: 머리줄(영토·빈칸 총계)", out1:match("^[^\n]*"))
+	ok(has(out1, "세율단계 3"), "내정: 세율 표기")
+	ok(has(out1, "GDP 1,240") and has(out1, "치안 -60"), "내정: 지역 수치")
+	ok(has(out1, "(수도)"), "내정: 속주 수도 표시")
+	ok(out1:find("Altdorf", 1, true) < out1:find("Helmgart", 1, true), "내정: GDP 내림차순 정렬")
+	ok(has(out1, "반란 임박"), "내정: 치안 -50 이하 = 반란 임박(기존 임계 재사용)")
+	ok(has(out1, "3/4") and has(out1, "Ubersreik"), "내정: 속주 진행 + 남은 지역 지목")
+	ok(has(out1, "한 곳만 더 얻으면 완성"), "내정: 속주 완성 임박 조언")
+	ok(has(out1, "개발 포인트"), "내정: 개발 포인트 보유 안내")
+	ok(has(out1, "성장 +0") and has(out1, "정체"), "내정: 성장 정체 감지")
+	ok(has(out1, "게임 DB 추출이 필요합니다"), "내정: 건물 추천 불가를 정직하게 명시")
+	ok(not has(out1, "식량") and not has(out1, "노예"), "내정: 해당 없는 종족자원은 줄 자체를 안 만듦")
+
+	-- ② 포위가 치안보다 먼저 온다(심각도 순)
+	local rs = mkreg{ key = "wh_main_reg_altdorf", prov = "p", gdp = 100, po = -60, siege = true, slots = {} }
+	local out2 = with(mkfac({ rs }, {}), {}, {})
+	local i_siege, i_po = out2:find("포위 중", 1, true), out2:find("반란 임박", 1, true)
+	ok(i_siege and i_po and i_siege < i_po, "내정: 조언 순서 = 포위 > 반란", tostring(i_siege) .. "/" .. tostring(i_po))
+
+	-- ③ 식량 부족·노예 있는 종족은 줄이 생긴다
+	local out3 = with(mkfac({ mkreg{ key = "r", prov = "p", gdp = 1, po = 0, slots = {} } },
+		{ food = -3, food_prod = 10, food_use = 13, food_short = true, slaves = 1200, slaves_max = 5000 }), {}, {})
+	ok(has(out3, "식량 -3") and has(out3, "⚠부족"), "내정: 식량 부족 표기")
+	ok(has(out3, "노예 1,200/5,000"), "내정: 노예 표기")
+	ok(has(out3, "식량 부족 — 성장"), "내정: 식량 부족 조언")
+
+	-- ④ 호드(영토 0): 내정 대신 실상 + 첫 정착지 후보
+	local Sh = { threats = { settle = {
+		{ region = "wh3_reg_dark_fortress", owner = "wh3_main_ksl_kislev", at_war = true, suit = "suitability_good" },
+		{ region = "wh3_reg_zanbaijin", owner = "wh3_main_cth_west", at_war = false, suit = "suitability_verypoor" } } } }
+	local out4 = with(mkfac({}, {}), Sh, {})
+	ok(has(out4, "아직 정착지가 없습니다"), "호드: 내정 없음을 실상으로")
+	ok(has(out4, "읽을 수 없어"), "호드: 군단 건물 미조회를 정직하게")
+	ok(has(out4, "Dark_fortress") or has(out4, "Fortress"), "호드: 첫 정착지 후보 지목", out4)
+	ok(has(out4, "선전포고 필요") and has(out4, "기후 부적합"), "호드: 후보 제약 태그")
+
+	-- ⑤ 수집 실패는 '문제 없음'으로 위장하지 않는다
+	local broken = { region_list = function() error("boom") end }
+	local out5 = with(broken, {}, {})
+	ok(has(out5, "판단을 보류"), "내정: 수집 실패 = 보류 명시", out5)
+	cm.get_local_faction = function() return nil end
+	local out6 = table.concat(TI.build({}, {}), "\n")
+	ok(has(out6, "팩션을 읽지 못했습니다"), "내정: 팩션 조회 실패 명시")
+
+	-- ⑥ 대규모 제국: 상위 8곳 + '외 N' 상한
+	local many = {}
+	for i = 1, 12 do many[i] = mkreg{ key = "reg_" .. i, prov = "p", gdp = i * 10, po = 0, slots = {} } end
+	local out7 = with(mkfac(many, {}), {}, {})
+	ok(has(out7, "외 4곳"), "내정: 지역 목록 8개 + 외 N 상한", out7:match("… 외[^\n]*"))
+	cm.get_local_faction = saved_getf
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

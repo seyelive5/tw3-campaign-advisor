@@ -1876,12 +1876,28 @@ function plan_prose_lines(S)
 	return L
 end
 
--- ── 팝업 패널 (v11) — CA 공식 패턴: scripted_subtitles + text_child ──
--- 근거: 바닐라 lib_campaign_manager.lua show_subtitle(). CreateComponent
---   "UI/Common UI/scripted_subtitles.twui.xml" → find "text_child" 자식에 SetStateText.
-local PANEL_ID = "advisor_panel"
-local g_panel_shown = false
-local g_panel_turn  = -1   -- 마지막으로 패널을 띄운 턴(①: 턴 인식 토글 — 같은 턴 재클릭만 숨김)
+--[[═════════════════════════════════════════════════════════════════════
+  UI 셸 (v41) — 가로 탭 + 본문 + 측정 기반 페이지
+  ------------------------------------------------------------------------
+  패널 본체는 v11~v18에서 인게임 확인된 경로 그대로:
+    root:CreateComponent("UI/Common UI/scripted_subtitles.twui.xml")
+    → text_child(본문) / frame_black(배경) · 높이는 TextDimensions+TextYOffset 실측.
+  새로 더한 것은 탭 버튼뿐이고, 탭 템플릿은 아직 인게임 미검증이라
+  후보를 순서대로 시도해 성공한 이름을 프루프에 남긴다. 전부 실패해도
+  본문·메인 버튼은 그대로 동작한다(탭만 사라짐 — 조용한 고장 아님).
+═══════════════════════════════════════════════════════════════════════]]
+local PANEL_ID   = "advisor_panel"
+local TAB_PREFIX = "advisor_tab_"
+local NAV_PREV, NAV_NEXT = "advisor_nav_prev", "advisor_nav_next"
+-- 후보는 전부 reference/ui_layouts에 실존하는 템플릿 파일(경로 규약은 검증된 버튼과 동일).
+local TAB_TEMPLATES = {
+	"ui/templates/square_medium_text_button",
+	"ui/templates/dev_text_button",
+	"ui/templates/parchment_button",
+}
+local LAY = { X = 24, Y = 176, COL = 520, PAD = 18, MAXH = 720, TABH = 30, TABW = 96, GAP = 3 }
+local g_ui = { open = false, tab = nil, page = 1, npages = 1, built = false, tmpl = nil, tabs = {} }
+
 local function get_panel()
 	local panel = nil
 	pcall(function()
@@ -1894,62 +1910,193 @@ local function get_panel()
 	end)
 	return panel
 end
--- 클릭 시: 이미 떠 있고 '같은 턴'이면 숨김(재클릭=닫기), 그 외엔 항상 표시+갱신(①).
--- → 다음 턴에 새 브리핑을 보려고 클릭하면 숨김이 아니라 갱신됨(기존 토글의 UX 버그 해소).
--- 텍스트=text_child, 배경=frame_black(레이아웃에 있으나 visible=false).
-local function show_panel(prose, turn)
+
+local function panel_text()
+	local t = nil
+	pcall(function() t = find_uicomponent(core:get_ui_root(), PANEL_ID, "text_child") end)
+	return t
+end
+
+-- 문자열 → 줄 배열. 도메인이 문자열을 돌려줘도 받아주기 위한 것.
+local function split_lines(s)
+	local L = {}
+	if type(s) ~= "string" then return L end
+	for line in (s .. "\n"):gmatch("([^\n]*)\n") do L[#L + 1] = line end
+	while #L > 0 and L[#L] == "" do L[#L] = nil end
+	return L
+end
+
+-- 렌더 높이 실측(px). 텍스트를 실제로 넣어보고 잰다 — 글자수로 추정하지 않는다.
+--   (한글 폭·자동 줄바꿈 지점을 우리가 모르므로 추정하면 반드시 틀린다.)
+local function measure(textc, text)
+	local h = nil
+	pcall(function()
+		textc:ResizeTextResizingComponentToInitialSize(LAY.COL, 4000)   -- 측정용 넉넉한 높이
+		textc:SetStateText(text, "")
+		local _, th = textc:TextDimensions()
+		if th and th > 0 then
+			local oyt, oyb = 0, 0
+			pcall(function() oyt, oyb = textc:TextYOffset() end)        -- 폰트 상/하 여백(CA 정식 패턴)
+			h = th + (oyt or 0) + (oyb or 0)
+		end
+	end)
+	return h
+end
+
+-- 페이지 분할. 한 화면에 들어가면 측정 1회로 끝내고, 넘칠 때만 줄 단위로 채운다.
+local function paginate(textc, lines)
+	local whole = table.concat(lines, "\n")
+	if not textc then return { whole } end
+	local h = measure(textc, whole)
+	if h == nil or h <= LAY.MAXH then return { whole } end   -- 측정 실패 시엔 자르지 않음(잘림 < 통째로)
+	local pages, cur = {}, {}
+	for i = 1, #lines do
+		cur[#cur + 1] = lines[i]
+		local hh = measure(textc, table.concat(cur, "\n"))
+		if hh and hh > LAY.MAXH and #cur > 1 then
+			cur[#cur] = nil
+			pages[#pages + 1] = table.concat(cur, "\n")
+			cur = { lines[i] }
+		end
+	end
+	if #cur > 0 then pages[#pages + 1] = table.concat(cur, "\n") end
+	if #pages == 0 then pages[1] = whole end
+	return pages
+end
+
+-- 본문 한 페이지를 그린다(정확 높이 → 클리핑·데드스페이스 없음).
+local function panel_draw(text)
 	pcall(function()
 		if not get_panel() then return end
 		local root = core:get_ui_root()
-		local textc = find_uicomponent(root, PANEL_ID, "text_child")
-		if not textc then proof("v18 !!! text_child 못찾음", true); return end
+		local textc = panel_text()
+		if not textc then proof("v41 !!! text_child 못찾음", true); return end
 		local bg = find_uicomponent(root, PANEL_ID, "frame_black")   -- 숨겨진 검은 배너 배경
-
-		-- ① 턴 인식 토글: 같은 턴에 다시 누르면 닫기.
-		if g_panel_shown and turn == g_panel_turn then
-			g_panel_shown = false
-			if bg then pcall(function() bg:SetVisible(false) end) end
-			pcall(function() textc:SetVisible(false) end)
-			proof("v18 패널 숨김(같은 턴 재클릭)", true)
-			return
-		end
-
-		-- 표시 + 갱신
-		pcall(function() textc:SetStateText(prose, "") end)   -- 텍스트 먼저 세팅 후 측정(순서 중요)
-		g_panel_shown, g_panel_turn = true, turn
-		if bg then pcall(function() bg:SetVisible(true) end) end
-		pcall(function() textc:SetVisible(true) end)
-
-		local COL, X, Y, PAD = 460, 24, 150, 18
 		pcall(function() textc:SetTextHAlign("left") end)
 		pcall(function() textc:SetOpacity(255) end)
-		-- ② 클리핑 해결 — CA 정식 패턴(lib_text_pointers.lua): 폭 강제 래핑 후 TextDimensions(높이)에
-		--    TextYOffset(폰트 상/하 오프셋)을 더해 정확 높이 산출. (기존 h+8 하드코딩이 오프셋보다
-		--    작아 마지막 줄이 잘리던 원인.)
-		pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, 2000) end)  -- 측정용 넉넉한 높이(측정 자체가 안 잘리게)
-		local box_h = 600   -- 측정 실패 시 폴백(넉넉히 — 잘리는 것보다 큰 게 나음)
-		pcall(function()
-			local _, th = textc:TextDimensions()
-			if th and th > 20 then
-				local oyt, oyb = 0, 0
-				pcall(function() oyt, oyb = textc:TextYOffset() end)   -- 폰트 상/하 여백(CA와 동일)
-				box_h = th + (oyt or 0) + (oyb or 0)
-			end
-		end)
-		box_h = clamp(box_h, 60, 860)   -- 화면 밖으로 넘치지 않게 상한(Y=150 기준)
-		pcall(function() textc:ResizeTextResizingComponentToInitialSize(COL, box_h) end)  -- 정확 높이로 확정(클리핑·데드스페이스 제거)
+		local box_h = measure(textc, text) or 600    -- 측정 실패 폴백(넉넉히 — 잘리는 것보다 큰 게 낫다)
+		box_h = clamp(box_h, 60, LAY.MAXH + 60)
+		pcall(function() textc:ResizeTextResizingComponentToInitialSize(LAY.COL, box_h) end)
 		if bg then
 			pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)  -- 자막배너→툴팁프레임
 			pcall(function() bg:SetCurrentStateImageMargins(0, 16, 20, 16, 20) end)   -- CA 정확 9-slice
 			pcall(function() bg:SetCanResizeHeight(true); bg:SetCanResizeWidth(true) end)
-			pcall(function() bg:Resize(COL + PAD * 2, math.floor(box_h + PAD * 2)) end)
+			pcall(function() bg:Resize(LAY.COL + LAY.PAD * 2, math.floor(box_h + LAY.PAD * 2)) end)
 			pcall(function() bg:SetOpacity(235) end)
-			pcall(function() bg:MoveTo(X, Y) end)
+			pcall(function() bg:MoveTo(LAY.X, LAY.Y) end)
+			pcall(function() bg:SetVisible(true) end)
 		end
-		pcall(function() textc:MoveTo(X + PAD, Y + PAD) end)
+		pcall(function() textc:MoveTo(LAY.X + LAY.PAD, LAY.Y + LAY.PAD) end)
+		pcall(function() textc:SetVisible(true) end)
 		-- z-순서: 패널 전체를 topmost(내부는 frame_black<text_child 순 → 텍스트가 배경 위).
 		pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
-		proof(string.format("v18 패널 표시 col=%d h=%d turn=%s", COL, box_h, tostring(turn)), true)
+		proof(string.format("v41 본문 표시 col=%d h=%d tab=%s page=%d/%d",
+			LAY.COL, box_h, tostring(g_ui.tab), g_ui.page, g_ui.npages), true)
+	end)
+end
+
+local function panel_hide()
+	pcall(function()
+		local root = core:get_ui_root()
+		local textc = find_uicomponent(root, PANEL_ID, "text_child")
+		local bg = find_uicomponent(root, PANEL_ID, "frame_black")
+		if textc then pcall(function() textc:SetVisible(false) end) end
+		if bg then pcall(function() bg:SetVisible(false) end) end
+	end)
+end
+
+-- 버튼 1개 생성(있으면 재사용). 첫 성공 템플릿을 기억해 나머지에 재사용.
+local function make_button(id)
+	local btn = nil
+	pcall(function()
+		local root = core:get_ui_root()
+		btn = find_uicomponent(root, id)
+		if btn then return end
+		local addr = nil
+		if g_ui.tmpl then
+			pcall(function() addr = root:CreateComponent(id, g_ui.tmpl) end)
+		else
+			for _, t in ipairs(TAB_TEMPLATES) do
+				pcall(function() addr = root:CreateComponent(id, t) end)
+				if addr then g_ui.tmpl = t; proof("v41 탭 템플릿 채택 = " .. t, true); break end
+			end
+		end
+		if addr then btn = UIComponent(addr) end
+	end)
+	if btn then pcall(function() btn:SetInteractive(true); btn:SetDisabled(false); btn:RegisterTopMost() end) end
+	return btn
+end
+
+-- 라벨: 템플릿마다 텍스트 자식 이름이 다를 수 있어 둘 다 시도하고, 툴팁으로도 남긴다.
+local function set_label(btn, label)
+	pcall(function() btn:SetStateText(label, "") end)
+	pcall(function()
+		local t = find_uicomponent(btn, "button_txt")
+		if t then t:SetStateText(label, "") end
+	end)
+	pcall(function() btn:SetTooltipText(label, "", true) end)
+end
+
+local function ui_build_tabs(doms)
+	if g_ui.built then return end
+	g_ui.built = true
+	pcall(function()
+		local root = core:get_ui_root()
+		local rw, rh = 1600, 900
+		pcall(function()
+			local w, h = root:Dimensions()
+			if w and w > 0 then rw = w end
+			if h and h > 0 then rh = h end
+		end)
+		-- 화면 폭에 맞춰 탭 폭 자동 축소(고정폭이면 저해상도에서 화면 밖으로 나간다).
+		local n = #doms + 2                                     -- 탭 + ◀ ▶
+		LAY.TABW = clamp(math.floor((rw - LAY.X * 2 - n * LAY.GAP) / n), 52, 108)
+		-- 본문 높이 상한도 화면에서 실측(고정 720이면 900p에서 아래가 잘린다).
+		LAY.MAXH = clamp(rh - LAY.Y - 72, 240, 980)
+		local y, x = LAY.Y - LAY.TABH - 4, LAY.X
+		local function place(id, label)
+			local b = make_button(id)
+			if not b then return end
+			set_label(b, label)
+			pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
+			pcall(function() b:Resize(LAY.TABW, LAY.TABH) end)
+			local w = LAY.TABW
+			pcall(function() local ww = b:Dimensions(); if ww and ww > 0 then w = ww end end)
+			pcall(function() b:MoveTo(x, y) end)
+			pcall(function() b:SetVisible(false) end)
+			x = x + w + LAY.GAP
+		end
+		for _, d in ipairs(doms) do
+			place(TAB_PREFIX .. d.id, d.title)
+			g_ui.tabs[#g_ui.tabs + 1] = { id = d.id, comp = TAB_PREFIX .. d.id, title = d.title }
+		end
+		place(NAV_PREV, "◀"); place(NAV_NEXT, "▶")
+		proof(string.format("v41 탭 %d개 생성(폭 %d, 템플릿 %s)", #g_ui.tabs, LAY.TABW, tostring(g_ui.tmpl)), true)
+	end)
+end
+
+local function ui_tabs_visible(vis)
+	pcall(function()
+		local root = core:get_ui_root()
+		for _, t in ipairs(g_ui.tabs) do
+			local b = find_uicomponent(root, t.comp)
+			if b then pcall(function() b:SetVisible(vis) end) end
+		end
+		for _, id in ipairs({ NAV_PREV, NAV_NEXT }) do
+			local b = find_uicomponent(root, id)
+			if b then pcall(function() b:SetVisible(vis and g_ui.npages > 1) end) end
+		end
+	end)
+end
+
+-- 활성 탭 표시: 템플릿의 selected 상태 이름을 모르므로 라벨 접두사로만 구분(확실한 방법).
+local function ui_mark_active()
+	pcall(function()
+		local root = core:get_ui_root()
+		for _, t in ipairs(g_ui.tabs) do
+			local b = find_uicomponent(root, t.comp)
+			if b then set_label(b, (t.id == g_ui.tab) and ("▶" .. t.title) or t.title) end
+		end
 	end)
 end
 
@@ -2050,8 +2197,32 @@ local function probe_cai_v36(S)
 	end)
 end
 
--- ── 클릭 시 실행되는 두뇌 ────────────────────────────────────────────
-local function run_advisor()
+-- ── 도메인 레지스트리(v41) ───────────────────────────────────────────
+-- 도메인 파일(advisor_dom_*.lua)이 로드 시 CA_DOMAINS에 등록:
+--   { id="internal", order=20, title="내정", build=function(S, B) return {줄...} end }
+-- 로드 순서는 보장되지 않으므로 전역 접근은 전부 '호출 시점'에만 한다.
+local function domains_sorted()
+	local L = {}
+	pcall(function()
+		if type(CA_DOMAINS) == "table" then
+			for _, d in ipairs(CA_DOMAINS) do
+				if type(d) == "table" and d.id and d.build then L[#L + 1] = d end
+			end
+		end
+	end)
+	table.sort(L, function(a, b) return (a.order or 99) < (b.order or 99) end)
+	return L
+end
+
+-- ── 턴당 1회 기반 수집(v41) — 탭을 바꿔도 다시 긁지 않는다 ───────────
+-- 클릭마다 전부 수집하면 도메인이 늘어난 만큼 그대로 느려진다. 기반 상태는
+-- 턴당 1회, 도메인 본문은 탭을 처음 열 때 1회만 계산해 B.content에 캐시.
+local g_base = { turn = -2, content = {} }
+local function ensure_base()
+	local turn = -1
+	pcall(function() turn = cm:turn_number() end)
+	if g_base.turn == turn and g_base.S then return g_base end
+	local B = { turn = turn, content = {} }
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
@@ -2083,24 +2254,107 @@ local function run_advisor()
 		proof("[참모 브리핑] " .. prose, true)             -- 파일에도 산문 기록
 		local race = (prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
 		local tip = string.format("📋 %s 참모 브리핑 · %s턴\n%s", race, tostring(num(S.turn, "?")), prose)
-		pcall(function()                                   -- 화면: 산문 툴팁
+		pcall(function()                                   -- 메인 버튼 툴팁(패널 없이도 요약이 보이게)
 			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
-		show_panel(prose, num(S.turn, 0))                  -- 화면: 팝업 패널(①턴 인식 토글, ②정확 높이)
+		B.S, B.D, B.cand, B.prof, B.prose = S, D, cand, prof, prose
 		record_snapshot(S, hist)                           -- 현재 턴 스냅샷 저장
 	end)
-	if not ok then proof("v9f run_advisor 예외: " .. tostring(err), true) end
+	if not ok then proof("v41 기반 수집 예외: " .. tostring(err), true) end
+	g_base = B
+	return B
 end
 
--- ── 버튼 + 리스너 (Step3/4 유지) ─────────────────────────────────────
+-- 탭 본문(캐시). 실패는 반드시 눈에 보이게 — 빈 화면으로 위장하지 않는다.
+local function content_for(id)
+	local B = ensure_base()
+	if B.content[id] then return B.content[id] end
+	local lines, ok = nil, false
+	for _, d in ipairs(domains_sorted()) do
+		if d.id == id then
+			ok = pcall(function() lines = d.build(B.S, B) end)
+			break
+		end
+	end
+	if type(lines) == "string" then lines = split_lines(lines) end
+	if type(lines) ~= "table" or #lines == 0 then
+		lines = { "⚠ 이 항목을 읽지 못했습니다 — 짐작 대신 판단을 보류합니다.",
+		          ok and "(수집은 됐지만 내용이 비었습니다)" or "(수집 중 오류)" }
+	end
+	B.content[id] = lines
+	return lines
+end
+
+local function ui_render()
+	local lines = content_for(g_ui.tab)
+	local textc = panel_text()
+	if not textc then get_panel(); textc = panel_text() end
+	local pages = paginate(textc, lines)
+	g_ui.npages = #pages
+	if g_ui.page > g_ui.npages then g_ui.page = g_ui.npages end
+	if g_ui.page < 1 then g_ui.page = 1 end
+	local body = pages[g_ui.page] or ""
+	if g_ui.npages > 1 then
+		body = body .. string.format("\n— %d/%d 쪽 (◀ ▶) —", g_ui.page, g_ui.npages)
+	end
+	panel_draw(body)
+	ui_mark_active()
+	ui_tabs_visible(true)
+end
+
+local function ui_open(tab)
+	local doms = domains_sorted()
+	if #doms == 0 then proof("v41 !!! 등록된 도메인이 없음", true); return end
+	ui_build_tabs(doms)
+	local want = tab or g_ui.tab or doms[1].id
+	local found = false
+	for _, d in ipairs(doms) do if d.id == want then found = true end end
+	g_ui.tab = found and want or doms[1].id
+	g_ui.open = true
+	ui_render()
+end
+
+local function ui_close()
+	g_ui.open = false
+	panel_hide()
+	ui_tabs_visible(false)
+end
+
+local function ui_click(id)
+	local ok, err = pcall(function()
+		if id == BUTTON_ID then
+			if g_ui.open then ui_close() else g_ui.page = 1; ui_open(nil) end
+			return
+		end
+		if not g_ui.open then return end
+		if id == NAV_PREV then
+			g_ui.page = (g_ui.page <= 1) and g_ui.npages or (g_ui.page - 1); ui_render(); return
+		end
+		if id == NAV_NEXT then
+			g_ui.page = (g_ui.page >= g_ui.npages) and 1 or (g_ui.page + 1); ui_render(); return
+		end
+		local tid = id:match("^" .. TAB_PREFIX .. "(.+)$")
+		if tid then
+			if tid == g_ui.tab then ui_close() else g_ui.tab = tid; g_ui.page = 1; ui_render() end
+		end
+	end)
+	if not ok then proof("v41 클릭 처리 예외(" .. tostring(id) .. "): " .. tostring(err), true) end
+end
+
+-- ── 버튼 + 리스너 (Step3/4 유지, v41에서 탭·페이지로 확장) ───────────
 local function register_click_listener()
 	core:add_listener(
 		"advisor_button_click", "ComponentLClickUp",
-		function(context) return context.string == BUTTON_ID end,
-		function(context) run_advisor() end,
+		function(context)
+			local s = context.string
+			if type(s) ~= "string" then return false end
+			return s == BUTTON_ID or s == NAV_PREV or s == NAV_NEXT
+				or s:match("^" .. TAB_PREFIX) ~= nil
+		end,
+		function(context) ui_click(context.string) end,
 		true)
-	proof("2a 클릭 리스너 등록 (버튼=" .. BUTTON_ID .. ")", true)
+	proof("2a 클릭 리스너 등록 (메인=" .. BUTTON_ID .. " · 탭=" .. TAB_PREFIX .. "*)", true)
 end
 
 local function create_advisor_button()
@@ -2128,11 +2382,33 @@ function campaign_advisor()
 	proof("2a campaign_advisor() 준비 완료 — 버튼 클릭 시 전략 브리핑 생성.", true)
 end
 
+--[[═════════════════════════════════════════════════════════════════════
+  도메인 공용 유틸 노출(v41) — 게임에서도 항상 켜짐
+  ------------------------------------------------------------------------
+  advisor_dom_*.lua 는 이 파일보다 먼저 로드될 수 있으므로, 도메인 쪽에서는
+  반드시 '호출 시점'에 CA_U를 읽어야 한다(로드 시점 캡처 금지).
+═══════════════════════════════════════════════════════════════════════]]
+CA_U = {
+	num = num, clamp = clamp, sev = sev,
+	josa = josa, josa_ro = josa_ro, nro = nro, has_batchim = has_batchim,
+	clause = clause, join_clauses = join_clauses,
+	fname = fname, region_disp = region_disp, province_disp = province_disp,
+	first_names = first_names, proof = proof,
+}
+
+-- 대전략 탭(order 10) — 본문은 기존 산문 전체. 나머지 도메인은 별도 파일에서 등록.
+CA_DOMAINS = CA_DOMAINS or {}
+CA_DOMAINS[#CA_DOMAINS + 1] = {
+	id = "grand", order = 10, title = "대전략",
+	build = function(S, B) return split_lines(B and B.prose or "") end,
+}
+
 -- ── 오프라인 테스트 export (게임에선 완전 무시) ──────────────────────
 -- 하니스(test/run_brain_tests.lua)가 dofile 전에 ADVISOR_TEST_EXPORTS=true를
 -- 설정하면 순수 함수들을 노출. 인게임에선 전역이 nil이라 이 블록은 no-op.
 if ADVISOR_TEST_EXPORTS then
 	CA_TEST = {
+		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
 		num = num, clamp = clamp, sev = sev, urgency = urgency,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40
