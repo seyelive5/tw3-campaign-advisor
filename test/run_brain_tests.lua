@@ -36,6 +36,7 @@ cm = {
 -- campaign_advisor보다 먼저 온다 → 도메인이 CA_U를 로드 시점에 잡으면 nil이 된다.
 -- 같은 순서로 실행해 그 실수를 하니스가 잡게 한다.
 ADVISOR_TEST_EXPORTS = true
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_military.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_stubs.lua")
@@ -44,9 +45,11 @@ dofile(ROOT .. "/src/script/campaign/mod/campaign_advisor.lua")
 assert(CA_TEST, "CA_TEST export 실패")
 assert(CA_TEST_INTERNAL, "CA_TEST_INTERNAL export 실패")
 assert(CA_TEST_MILITARY, "CA_TEST_MILITARY export 실패")
+assert(CA_TEST_DIPLO, "CA_TEST_DIPLO export 실패")
 local T = CA_TEST
 local TI = CA_TEST_INTERNAL
 local TM = CA_TEST_MILITARY
+local TD = CA_TEST_DIPLO
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -999,7 +1002,7 @@ do
 	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "force_gold_value"),
 		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
 	-- 완성된 탭은 자리표시 문구가 남아 있으면 안 된다(등록 중복·삭제 누락 감지)
-	for _, id in ipairs({ "internal", "army" }) do
+	for _, id in ipairs({ "internal", "army", "diplo" }) do
 		local d2 = nil
 		for _, d in ipairs(doms) do if d.id == id then d2 = d end end
 		ok(d2 ~= nil, "완성 탭 등록됨: " .. id)
@@ -1218,6 +1221,129 @@ do
 	local out7 = with(mkfac({ a1 }), { regions = 1 })
 	ok(has(out7, "이름 미상"), "군사: 장군 이름 조회 실패 폴백", out7:match("1%. [^\n]*"))
 	cm.get_local_faction, common = saved_getf, saved_common
+end
+
+-- ── 17. 외교 탭 (v47) ─────────────────────────────────────────────────
+do
+	local saved_getf, saved_getfac, saved_cai = cm.get_local_faction, cm.get_faction, cm.cai_evaluate_quick_deal_action
+	local function mkflist(keys)
+		local t = {}
+		for _, k in ipairs(keys) do t[#t + 1] = { name = function() return k end } end
+		return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end }
+	end
+	-- 딜 수락표: ACCEPT[키][옵션] = true 면 CAI가 수락한다고 답한다.
+	local ACCEPT, CALLS = {}, { n = 0 }
+	cm.get_faction = function(_, k) return { is_null_interface = function() return false end, __key = k } end
+	cm.cai_evaluate_quick_deal_action = function(_, _, of, option)
+		CALLS.n = CALLS.n + 1
+		local yes = ACCEPT[of.__key] and ACCEPT[of.__key][option]
+		return 0, yes == true
+	end
+	local function mkfac(o)
+		return {
+			at_war = function() return o.at_war end,
+			num_allies = function() return o.n_allies end,
+			unused_international_trade_route = function() return o.trade_free end,
+			trade_route_limit_reached = function() return o.trade_full end,
+			trade_value = function() return o.trade_value end,
+			trade_value_percent = function() return o.trade_pct end,
+			factions_at_war_with = function() return mkflist(o.wars or {}) end,
+			factions_military_allies_with = function() return mkflist(o.allies or {}) end,
+			diplomatic_standing_with = function(_, k) return (o.standing or {})[k] end,
+			diplomatic_attitude_towards = function(_, k) return (o.attitude or {})[k] end,
+			trade_agreement_with = function(_, of) return (o.has_trade or {})[of.__key] == true end,
+			military_allies_with = function(_, of) return (o.has_mil or {})[of.__key] == true end,
+			defensive_allies_with = function(_, of) return (o.has_def or {})[of.__key] == true end,
+		}
+	end
+	local function with(fac, S)
+		cm.get_local_faction = function() return fac end
+		return table.concat(TD.build(S or {}, {}), "\n")
+	end
+
+	-- ① 전형적 중반: 전쟁 3 · 동맹 1 · 교역 제안 가능
+	ACCEPT = { grn = { diplomatic_option_trade_agreement = true, diplomatic_option_nonaggression_pact = true },
+	           bre = { diplomatic_option_confederation = true } }
+	CALLS.n = 0
+	local f1 = mkfac{ at_war = true, n_allies = 1, trade_free = true, trade_value = 1240,
+		wars = { "ksl", "nor", "chs" }, allies = { "bre" },
+		standing = { ksl = -85, nor = -40, chs = -20, bre = 120, grn = 30 },
+		has_mil = { bre = true } }
+	local S1 = { border_enemies = { "nor" }, border_others = { "grn" },
+		diplo = { ok = true, peace = { "ksl" }, ally = {} },
+		strat = { hostile = { { key = "grn", stance = -1 } } } }
+	local out1 = with(f1, S1)
+	ok(has(out1, "【외교】") and has(out1, "전쟁 3") and has(out1, "동맹 1"), "외교: 머리줄", out1:match("^[^\n]*"))
+	ok(has(out1, "교역수입 1,240") and has(out1, "교역로 여유 있음"), "외교: 교역 현황", out1:match("^[^\n]*"))
+	ok(out1:find("nor", 1, true) < out1:find("ksl", 1, true), "외교: 전쟁 목록은 국경 우선 정렬")
+	ok(has(out1, "관계 -85") and has(out1, "화친 가능"), "외교: 관계 날값 + 화친 가능 표시")
+	ok(has(out1, "군사동맹") and has(out1, "관계 +120"), "외교: 우호 목록")
+	ok(has(out1, "• 화친:") and has(out1, "• 교역:") and has(out1, "• 불가침:") and has(out1, "• 연맹:"),
+		"외교: 성사되는 딜 5종 분류", out1:match("─ 지금 성사되는 것[^\n]*"))
+	ok(has(out1, "전쟁 전인데 우리를 적대"), "외교: CAI 적대 이웃 경보")
+	ok(has(out1, "전선이 3개입니다"), "외교: 다전선 + 화친 가능 → 전선 축소 권고")
+	ok(has(out1, "연맹이 성사됩니다") and has(out1, "최우선"), "외교: 연맹은 최우선으로")
+	ok(has(out1, "불가침이 성사되니"), "외교: 적대 이웃에 불가침이 가능하면 그것부터")
+
+	-- ② 관계 눈금을 모르므로 '좋다/나쁘다'로 옮기지 않는다
+	ok(not has(out1, "관계가 좋") and not has(out1, "관계가 나쁘") and has(out1, "눈금을 아직 실측하지 못해"),
+		"외교: 미측정 눈금을 판정으로 옮기지 않음")
+	ok(TD.rel_tag({ standing = -5 }) == "관계 -5", "외교: 관계 꼬리표는 날값", TD.rel_tag({ standing = -5 }))
+	ok(TD.rel_tag({ attitude = 7 }) == "태도 +7", "외교: standing 없으면 attitude로 대체")
+	ok(TD.rel_tag({}) == nil, "외교: 둘 다 없으면 표시하지 않음")
+
+	-- ③ 평화기: 할 일이 없으면 없다고 말한다(가만히 있어도 되는지가 질문이었다)
+	ACCEPT = {}
+	local f2 = mkfac{ at_war = false, n_allies = 2, trade_full = true,
+		wars = {}, allies = { "bre", "ksl" }, standing = { bre = 100, ksl = 90 } }
+	local out2 = with(f2, { border_others = {}, diplo = { ok = true, peace = {}, ally = {} } })
+	ok(has(out2, "전쟁 0"), "외교: 전쟁 없음", out2:match("^[^\n]*"))
+	ok(has(out2, "성사되는 것: 없습니다"), "외교: 성사될 게 없으면 그렇게 말함")
+	ok(has(out2, "그냥 두면 됩니다"), "외교: 평화기에는 '가만히 있어도 된다'를 명시", out2:match("─ 지금 할 일[^\n]*"))
+
+	-- ④ 전쟁 중인데 외교로 풀 게 없을 때
+	local f3 = mkfac{ at_war = true, n_allies = 0, wars = { "ksl" }, allies = {}, standing = { ksl = -99 } }
+	local out3 = with(f3, { border_enemies = { "ksl" }, border_others = {}, diplo = { ok = true, peace = {}, ally = {} } })
+	ok(has(out3, "전장에서 끝내야"), "외교: 전시에 외교 수단이 없으면 그렇게 말함", out3:match("─ 지금 할 일[^\n]*"))
+
+	-- ⑤ 기반 수집(S.diplo) 실패는 숨기지 않는다
+	local out4 = with(f3, { border_enemies = {}, border_others = {}, diplo = { ok = false } })
+	ok(has(out4, "기반 수집이 실패해 읽지 못했습니다"), "외교: 화친·동맹 가부 조회 실패 명시")
+
+	-- ⑥ CAI 호출 예산: 상대가 많아도 상한을 넘기지 않고, 넘겼으면 밝힌다
+	ACCEPT = {}
+	CALLS.n = 0
+	local many = {}
+	for i = 1, 8 do many[i] = "nb" .. i end
+	local f4 = mkfac{ at_war = false, n_allies = 4, wars = {}, allies = { "a1","a2","a3","a4" } }
+	local out5 = with(f4, { border_others = many, diplo = { ok = true, peace = {}, ally = {} } })
+	ok(CALLS.n <= TD.BUDGET, "외교: CAI 호출이 예산을 넘지 않음", CALLS.n .. "/" .. TD.BUDGET)
+	ok(has(out5, "조회 예산"), "외교: 예산 소진 사실을 밝힘")
+
+	-- ⑦ 조사: 팩션 이름 받침에 따라 과/와·이/가가 갈린다(이름은 현지화 결과라
+	--    받침을 미리 알 수 없으므로 반드시 josa를 거쳐야 한다)
+	ACCEPT = { wh_main_grn_greenskins = { diplomatic_option_trade_agreement = true } }
+	local f5 = mkfac{ at_war = false, n_allies = 1, trade_free = true, wars = {}, allies = {} }
+	local out7 = with(f5, { border_others = { "wh_main_grn_greenskins" },
+		diplo = { ok = true, peace = {}, ally = {} },
+		strat = { hostile = { { key = "wh_main_grn_greenskins", stance = -2 } } } })
+	ok(has(out7, "그린스킨과 체결") and not has(out7, "그린스킨와"),
+		"외교: 받침 있는 이름 → '과'", out7:match("교역 여유[^\n]*"))
+	ok(has(out7, "그린스킨이 적대적") and not has(out7, "그린스킨가"),
+		"외교: 받침 있는 이름 → '이'", out7:match("[^\n]*적대적[^\n]*"))
+	ACCEPT = { wh_main_brt_bretonnia = { diplomatic_option_trade_agreement = true } }
+	local out8 = with(f5, { border_others = { "wh_main_brt_bretonnia" },
+		diplo = { ok = true, peace = {}, ally = {} } })
+	ok(has(out8, "브레토니아와 체결") and not has(out8, "브레토니아과"),
+		"외교: 받침 없는 이름 → '와'", out8:match("교역 여유[^\n]*"))
+
+	-- ⑧ 수집 실패 / 팩션 없음
+	local out6 = with({ factions_at_war_with = function() error("boom") end }, {})
+	ok(has(out6, "판단을 보류"), "외교: 수집 실패 = 보류 명시")
+	cm.get_local_faction = function() return nil end
+	ok(has(table.concat(TD.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "외교: 팩션 조회 실패 명시")
+
+	cm.get_local_faction, cm.get_faction, cm.cai_evaluate_quick_deal_action = saved_getf, saved_getfac, saved_cai
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

@@ -2590,6 +2590,7 @@ CA_U = {
 	fname = fname, region_disp = region_disp, province_disp = province_disp,
 	first_names = first_names, proof = proof,
 	comma = comma, signed = signed,
+	eval_deal = eval_deal,   -- CAI 수락 예측(외교 도메인이 같은 구현을 재사용)
 }
 
 -- 대전략 탭(order 10) — 본문은 기존 산문 전체. 나머지 도메인은 별도 파일에서 등록.

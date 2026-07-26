@@ -10,15 +10,10 @@
 CA_DOMAINS = CA_DOMAINS or {}
 
 local PENDING = {
-	{ id = "diplo", order = 30, title = "외교", eta = "다음 차례",
-	  plan = { "누구와 무엇을 맺을 수 있는지 — AI가 실제로 수락할 딜만 추려서",
-	           "태도·관계 수치, 동맹/교역/불가침 현황, 남은 교역로 여유",
-	           "선전포고가 임박한 이웃(CAI 스탠스 감시)" },
-	  api  = "diplomatic_attitude_towards · cai_evaluate_quick_deal_action · unused_international_trade_route" },
-	{ id = "tech", order = 40, title = "연구", eta = "5순위(마지막)",
+	{ id = "tech", order = 40, title = "연구", eta = "마지막",
 	  plan = { "지금 무엇을 연구할지, 우선순위와 이유" },
 	  api  = "has_technology·is_currently_researching만 존재 — 기술 목록 API가 없어 DB 추출이 선행돼야 합니다" },
-	{ id = "war", order = 60, title = "전쟁", eta = "4순위",
+	{ id = "war", order = 60, title = "전쟁", eta = "다음 차례",
 	  plan = { "전선별 전력비와 승산, 어디를 먼저 칠지",
 	           "포위·접근 중인 적군, 강화가 필요한 지점",
 	           "휴전이 통할 상대" },
