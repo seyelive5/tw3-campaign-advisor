@@ -231,7 +231,12 @@ local function build(S, B)
 		local a = as[i]
 		local p = {}
 		if a.fill then p[#p + 1] = string.format("충원 %d%%", a.fill) end
-		if a.str then p[#p + 1] = "전력 " .. comma(a.str) end
+		-- mf:strength()는 인게임 실측 결과 백만 단위 내부값이다(1군단 2,160,200).
+		-- 그 절대값은 플레이어가 어디에도 대조할 수 없으니, 우리 총전력 대비
+		-- 비중으로 바꿔 보여 준다 — 군단끼리 비교하는 데는 그게 필요한 값이다.
+		if a.str and G.strength > 0 then
+			p[#p + 1] = string.format("전력 비중 %d%%", math.floor(a.str / G.strength * 100 + 0.5))
+		end
 		if a.upkeep then p[#p + 1] = "유지 " .. comma(a.upkeep) end
 		if a.exp then p[#p + 1] = string.format("경험 %.1f", a.exp) end
 		local st = stance_disp(a.stance)
@@ -314,8 +319,7 @@ local function build(S, B)
 		if bk then
 			local ratio = G.strength / bs
 			L[#L + 1] = ""
-			L[#L + 1] = string.format("─ 전력비: 우리 %s 대 %s %s (%.2f배)",
-				comma(G.strength), fdisp(bk), comma(bs), ratio)
+			L[#L + 1] = string.format("─ 전력비: %s 대비 %.2f배", fdisp(bk), ratio)
 			if ratio < 0.8 then
 				add(string.format("%s와의 야전 전력비가 %.2f배입니다 — 정면 충돌은 불리합니다.", fdisp(bk), ratio))
 			end

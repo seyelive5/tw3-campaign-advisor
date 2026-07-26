@@ -1392,7 +1392,10 @@ do
 		targets = { { region = "reg_a", owner = "small", near = true } },
 		plan = { steps = { { kind = "elim", key = "small" } } },
 		diplo = { ok = true, peace = { "big" } } }
-	ok(has(out1, "【전쟁】") and has(out1, "전선 2") and has(out1, "우리 전력 18,000"), "전쟁: 머리줄", out1:match("^[^\n]*"))
+	ok(has(out1, "【전쟁】") and has(out1, "전선 2"), "전쟁: 머리줄", out1:match("^[^\n]*"))
+	-- 전력의 절대값은 인게임 실측 결과 백만 단위 내부값이라 대조할 데가 없다 → 숨긴다
+	ok(not has(out1, "18,000") and not has(out1, "30,000") and has(out1, "전력비 0.60배"),
+		"전쟁: 전력 절대값 대신 비율만", out1:match("[^\n]*전력비[^\n]*"))
 	ok(has(out1, "계획상 1순위"), "전쟁: 계획이 지목한 표적 표시")
 	ok(has(out1, "잔여 2정착지") and has(out1, "0.60배"), "전쟁: 전선 수치")
 	ok(has(out1, "지금이 정리할 때") and has(out1, "다음 수: "), "전쟁: 우세 전선은 정리 권고 + 다음 수")
@@ -1495,8 +1498,12 @@ do
 	ok(has(out1, "마법사 2명") and has(out1, "정원 여유 1") and has(out1, "평균 등급 3.0"),
 		"기타: 종류별 보유·정원·평균 등급", out1:match("• 마법사[^\n]*"))
 	ok(has(out1, "첩자 1명") and has(out1, "정원 참"), "기타: 정원이 찼으면 그렇게 표시")
-	ok(has(out1, "용사 2자리"), "기타: 보유 0인 종류의 빈 자리도 알려 준다(이 탭의 핵심)")
+	-- v49 인게임 실측: 카타이인데 runesmith=1/1, minister=4294967296.
+	-- agent_cap은 종족 가능 여부의 신호가 아니므로 미보유 종류는 권하지 않는다.
+	ok(not has(out1, "용사"), "기타: 미보유 종류는 '뽑을 수 있다'고 하지 않음(카타이에 룬장인 권하던 버그)")
 	ok(not has(out1, "고관"), "기타: 정원 0인 종족 미보유 요원은 표시하지 않음")
+	ok(has(out1, "정원 여유가 있는 요원") and has(out1, "마법사 1자리"),
+		"기타: 보유한 종류의 정원 여유만 표시", out1:match("─ 정원 여유[^\n]*\n[^\n]*"))
 	ok(has(out1, "안나(마법사) 부상"), "기타: 부상 인물")
 	ok(has(out1, "그레고르(마법사) 이번 턴 아직"), "기타: 유휴 인물(이동력 100%)")
 	ok(not has(out1, "요한"), "기타: 이동력을 쓴 인물은 유휴로 세지 않음")
@@ -1512,7 +1519,15 @@ do
 		cap = { spy = 2 }, rest = { spy = 2 } }
 	local out2 = with(f2)
 	ok(has(out2, "보유 요원: 없습니다"), "기타: 요원 0")
-	ok(has(out2, "첩자 2자리"), "기타: 요원 0이어도 뽑을 자리는 알려 준다")
+	ok(not has(out2, "첩자 2자리"), "기타: 요원 0이면 권할 근거도 없다(정원 API가 종족을 구분 못 함)")
+
+	-- ②-b 쓰레기 정원값(인게임 실측 minister=4294967296=2^32)은 걸러 낸다
+	local f2b = mkfac{ chars = { mkchar{ tk = "minister", name = "대신", rank = 1 } },
+		cap = { minister = 4294967296 }, rest = { minister = 4294967296 } }
+	local out2b = with(f2b)
+	ok(not has(out2b, "4294967296") and not has(out2b, "정원 여유가 있는 요원"),
+		"기타: 2^32 같은 쓰레기 정원값은 표시하지 않음", out2b:match("• 대신[^\n]*"))
+	ok(has(out2b, "대신 1명"), "기타: 정원이 쓰레기여도 보유 수는 그대로 센다")
 
 	-- ④ 종족 고유 요원(ASK_CAP에 없는 키)도 빠뜨리지 않는다
 	local f3 = mkfac{ chars = { mkchar{ tk = "wh3_cth_alchemist", name = "연금술사", rank = 3 } },

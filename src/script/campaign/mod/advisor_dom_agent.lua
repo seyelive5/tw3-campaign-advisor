@@ -43,7 +43,7 @@ local MAX_MINE, MAX_FOREIGN = 40, 30
 
 -- ── 수집 ──────────────────────────────────────────────────────────────
 local function gather(f, my_key)
-	local G = { agents = {}, order = {}, leaders = 0, cap = {},
+	local G = { agents = {}, order = {}, leaders = 0, cap = {}, cap_raw = {},
 	            foreign = {}, foreign_n = 0, foreign_capped = false,
 	            wounded = {}, idle = {} }
 	G.ok = pcall(function()
@@ -88,7 +88,12 @@ local function gather(f, my_key)
 		end
 	end)
 
-	-- 정원. 종족에 없는 요원은 0이 나오거나 조회가 실패한다 → 그 항목만 빠진다.
+	-- 정원. v49 인게임 실측에서 두 가지가 드러났다:
+	--   ① minister=4294967296 (2^32) — 정의되지 않은 값의 쓰레기 반환.
+	--   ② 카타이인데 runesmith=1/1 — 드워프 요원인데도 1이 나온다.
+	-- 즉 agent_cap은 "이 종족이 뽑을 수 있는가"의 신호가 아니다. 보유 중인
+	-- 요원의 정원(engineer=0/1)은 실제와 맞았으므로, 정원은 '보유한 종류'에만 쓴다.
+	local function sane(v) return type(v) == "number" and v >= 0 and v <= 99 and v == math.floor(v) end
 	local asked = {}
 	local function cap_of(k)
 		if asked[k] then return end
@@ -96,12 +101,28 @@ local function gather(f, my_key)
 		local total, rest = nil, nil
 		pcall(function() total = f:agent_cap(k) end)
 		pcall(function() rest = f:agent_cap_remaining(k) end)
-		if type(total) == "number" or type(rest) == "number" then
-			G.cap[k] = { total = total, rest = rest }
+		G.cap_raw[k] = { total = total, rest = rest }        -- 프루브용(값 형태 계속 관찰)
+		if sane(total) or sane(rest) then
+			G.cap[k] = { total = sane(total) and total or nil, rest = sane(rest) and rest or nil }
 		end
 	end
 	for _, k in ipairs(ASK_CAP) do cap_of(k) end
 	for _, k in ipairs(G.order) do cap_of(k) end   -- 종족 고유 요원(게임이 알려준 키)
+
+	-- 종족이 실제로 뽑을 수 있는지는 이쪽이 답할지 모른다 — 아직 미검증이라
+	-- 조언에 쓰지 않고 프루브로만 표본을 모은다(다음 배치에서 채택 판단).
+	G.rec_probe = {}
+	pcall(function()
+		local ml = f:military_force_list()
+		if ml:num_items() > 0 then
+			local mf = ml:item_at(0)
+			for _, k in ipairs(ASK_CAP) do
+				local v = nil
+				pcall(function() v = mf:can_recruit_agent_at_force(k) end)
+				G.rec_probe[#G.rec_probe + 1] = k .. "=" .. tostring(v)
+			end
+		end
+	end)
 
 	-- 우리 눈에 보이는 외국 인물. 팩션별로 묶고, 우리 땅에 서 있는 것만 따로 센다.
 	pcall(function()
@@ -137,9 +158,11 @@ end
 
 local function probe(G)
 	local first = G.order[1]
+	-- 정원은 걸러낸 값이 아니라 '날값'을 남긴다 — 어떤 종족에서 어떤 쓰레기가
+	-- 나오는지 계속 봐야 필터 기준을 고칠 수 있다.
 	local caps = {}
 	for _, k in ipairs(ASK_CAP) do
-		local c = G.cap[k]
+		local c = G.cap_raw[k]
 		if c then caps[#caps + 1] = string.format("%s=%s/%s", k, tostring(c.rest), tostring(c.total)) end
 	end
 	-- 보유 요원의 타입 키를 전부 남긴다 — 종족 고유 요원의 실제 키를 알아야
@@ -153,6 +176,10 @@ local function probe(G)
 		(#caps > 0) and table.concat(caps, " ") or "없음",
 		tostring(G.foreign_n), tostring(#G.foreign),
 		G.foreign_capped and "(상한 초과)" or ""))
+	-- 미검증 API 표본: 이게 종족별로 갈리면 '뽑을 수 있는 자리'를 되살릴 수 있다.
+	if #G.rec_probe > 0 then
+		say("[v50모집프로브] can_recruit_agent_at_force → " .. table.concat(G.rec_probe, " "))
+	end
 end
 
 -- ── 본문 ─────────────────────────────────────────────────────────────
@@ -204,25 +231,19 @@ local function build(S, B)
 		L[#L + 1] = "─ 보유 요원: 없습니다."
 	end
 
-	-- 뽑을 수 있는 빈 자리(보유 0인 종류까지 포함 — 여기가 이 탭의 핵심)
+	-- 정원 여유. '보유한 종류'에만 쓴다 — v49 실측에서 미보유 종류의 agent_cap이
+	-- 종족과 무관하게 1을 뱉는 것을 확인했기 때문이다(카타이인데 룬장인 1).
+	-- 미보유 종류까지 "뽑을 수 있다"고 말하면 없는 요원을 권하게 된다.
 	local slots = {}
-	for _, k in ipairs(ASK_CAP) do
+	for _, k in ipairs(G.order) do
 		local c = G.cap[k]
 		if c and type(c.rest) == "number" and c.rest > 0 then
 			slots[#slots + 1] = string.format("%s %d자리", tdisp(k), c.rest)
 		end
 	end
-	for _, k in ipairs(G.order) do          -- 종족 고유 요원도 빠뜨리지 않는다
-		local c = G.cap[k]
-		local known = false
-		for _, a in ipairs(ASK_CAP) do if a == k then known = true end end
-		if not known and c and type(c.rest) == "number" and c.rest > 0 then
-			slots[#slots + 1] = string.format("%s %d자리", tdisp(k), c.rest)
-		end
-	end
 	if #slots > 0 then
 		L[#L + 1] = ""
-		L[#L + 1] = "─ 지금 뽑을 수 있는 자리"
+		L[#L + 1] = "─ 정원 여유가 있는 요원"
 		L[#L + 1] = "  " .. table.concat(slots, " · ")
 	end
 
@@ -297,8 +318,10 @@ local function build(S, B)
 	end
 
 	L[#L + 1] = ""
-	L[#L + 1] = "※ 요원 행동의 성공률과 적 요원의 의도는 조회할 방법이 없습니다."
-	L[#L + 1] = "   보이지 않는 곳의 적 인물도 셀 수 없습니다 — 여기 없다고 없는 게 아닙니다."
+	L[#L + 1] = "※ 아직 없는 종류의 요원을 뽑을 수 있는지는 말하지 않습니다 — 정원 API가"
+	L[#L + 1] = "   종족과 무관한 값을 돌려주는 것을 인게임에서 확인했습니다(카타이에 룬장인)."
+	L[#L + 1] = "   요원 행동의 성공률과 적 요원의 의도도 조회할 방법이 없고,"
+	L[#L + 1] = "   보이지 않는 곳의 적 인물은 셀 수 없습니다 — 여기 없다고 없는 게 아닙니다."
 	return L
 end
 

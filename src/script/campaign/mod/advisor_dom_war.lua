@@ -138,7 +138,6 @@ local function build(S, B)
 		end
 	else
 		local head = { string.format("전선 %d", #fronts + far) }
-		if mine then head[#head + 1] = "우리 전력 " .. comma(mine) end
 		if #sieges > 0 then head[#head + 1] = string.format("포위당함 %d", #sieges) end
 		if #threat > 0 then head[#head + 1] = string.format("위협받는 곳 %d", #threat) end
 		L[#L + 1] = "【전쟁】 " .. table.concat(head, " · ")
@@ -153,10 +152,10 @@ local function build(S, B)
 			local p = {}
 			if w.border then p[#p + 1] = "국경" end
 			if w.regions then p[#p + 1] = string.format("잔여 %d정착지", w.regions) end
-			if w.strength then
-				p[#p + 1] = string.format("전력 %s%s", comma(w.strength),
-					w.ratio and string.format(" (%.2f배)", w.ratio) or "")
-			end
+			-- 전력의 절대값(인게임 실측: 백만 단위 내부값)은 대조할 데가 없어 숨기고
+			-- 비율만 보여 준다. 전력을 읽었는데 비율을 못 낸 경우만 그 사실을 알린다.
+			if w.ratio then p[#p + 1] = string.format("전력비 %.2f배", w.ratio)
+			elseif w.strength then p[#p + 1] = "전력비 미상(우리 전력 조회 실패)" end
 			if w.rank then p[#p + 1] = string.format("국력 %d위", w.rank) end
 			if type(w.chest) == "number" then p[#p + 1] = "군비 " .. comma(w.chest) end
 			local mark = ""
