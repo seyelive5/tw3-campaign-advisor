@@ -2564,12 +2564,32 @@ end
   advisor_dom_*.lua 는 이 파일보다 먼저 로드될 수 있으므로, 도메인 쪽에서는
   반드시 '호출 시점'에 CA_U를 읽어야 한다(로드 시점 캡처 금지).
 ═══════════════════════════════════════════════════════════════════════]]
+-- 천 단위 구분 / 부호 붙이기. 도메인 파일마다 복사하지 않도록 여기서 한 번만 정의한다
+-- (게임 Lua의 string.sub은 문자 단위라 자릿수 계산 대신 gsub 반복으로 처리).
+local function comma(n)
+	local s = tostring(math.floor(tonumber(n) or 0))
+	local sign = ""
+	if s:sub(1, 1) == "-" then sign = "-"; s = s:sub(2) end
+	while true do
+		local rep
+		s, rep = s:gsub("^(%d+)(%d%d%d)", "%1,%2")
+		if rep == 0 then break end
+	end
+	return sign .. s
+end
+
+local function signed(n)
+	local v = math.floor(tonumber(n) or 0)
+	return (v >= 0 and "+" or "") .. comma(v)
+end
+
 CA_U = {
 	num = num, clamp = clamp, sev = sev,
 	josa = josa, josa_ro = josa_ro, nro = nro, has_batchim = has_batchim,
 	clause = clause, join_clauses = join_clauses,
 	fname = fname, region_disp = region_disp, province_disp = province_disp,
 	first_names = first_names, proof = proof,
+	comma = comma, signed = signed,
 }
 
 -- 대전략 탭(order 10) — 본문은 기존 산문 전체. 나머지 도메인은 별도 파일에서 등록.

@@ -28,23 +28,10 @@ local function pdisp(k) local u = U(); return (u.province_disp and u.province_di
 local function fdisp(k) local u = U(); return (u.fname and u.fname(k)) or tostring(k) end
 local function say(msg) local u = U(); if u.proof then pcall(function() u.proof(msg, true) end) end end
 
--- 천 단위 구분(게임 Lua의 string.sub이 문자 단위라 gsub 반복으로 처리)
-local function comma(n)
-	local s = tostring(math.floor(tonumber(n) or 0))
-	local sign = ""
-	if s:sub(1, 1) == "-" then sign = "-"; s = s:sub(2) end
-	while true do
-		local rep
-		s, rep = s:gsub("^(%d+)(%d%d%d)", "%1,%2")
-		if rep == 0 then break end
-	end
-	return sign .. s
-end
-
-local function signed(n)
-	local v = math.floor(tonumber(n) or 0)
-	return (v >= 0 and "+" or "") .. comma(v)
-end
+-- 천 단위 구분 / 부호. 구현은 CA_U에 하나만 두고 여기서는 호출 시점에 가져온다
+-- (로드 순서상 이 파일이 먼저라 CA_U는 로드 시점엔 아직 없다).
+local function comma(n) local u = U(); return u.comma and u.comma(n) or tostring(math.floor(tonumber(n) or 0)) end
+local function signed(n) local u = U(); return u.signed and u.signed(n) or tostring(math.floor(tonumber(n) or 0)) end
 
 -- ── 수집 (탭을 처음 열 때 1회. 전 호출 pcall — 실패는 nil로 남기고 말하지 않는다) ──
 local function gather(f)

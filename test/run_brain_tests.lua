@@ -37,13 +37,16 @@ cm = {
 -- 같은 순서로 실행해 그 실수를 하니스가 잡게 한다.
 ADVISOR_TEST_EXPORTS = true
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_military.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_stubs.lua")
 dofile(ROOT .. "/src/script/campaign/mod/za_faction_profiles.lua")
 dofile(ROOT .. "/src/script/campaign/mod/campaign_advisor.lua")
 assert(CA_TEST, "CA_TEST export 실패")
 assert(CA_TEST_INTERNAL, "CA_TEST_INTERNAL export 실패")
+assert(CA_TEST_MILITARY, "CA_TEST_MILITARY export 실패")
 local T = CA_TEST
 local TI = CA_TEST_INTERNAL
+local TM = CA_TEST_MILITARY
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -991,10 +994,16 @@ do
 
 	-- 미구현 탭은 '비어 있음'이 아니라 '아직 없음 + 무엇이 들어갈지'를 말한다
 	local stub = nil
-	for _, d in ipairs(doms) do if d.id == "army" then stub = d end end
+	for _, d in ipairs(doms) do if d.id == "war" then stub = d end end
 	local sline = table.concat(stub.build(), "\n")
-	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "unit_list"),
+	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "force_gold_value"),
 		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
+	-- 완성된 탭은 자리표시 문구가 남아 있으면 안 된다(등록 중복·삭제 누락 감지)
+	for _, id in ipairs({ "internal", "army" }) do
+		local d2 = nil
+		for _, d in ipairs(doms) do if d.id == id then d2 = d end end
+		ok(d2 ~= nil, "완성 탭 등록됨: " .. id)
+	end
 end
 
 do
@@ -1103,6 +1112,112 @@ do
 	local out7 = with(mkfac(many, {}), {}, {})
 	ok(has(out7, "외 4곳"), "내정: 지역 목록 8개 + 외 N 상한", out7:match("… 외[^\n]*"))
 	cm.get_local_faction = saved_getf
+end
+
+-- ── 16. 군사 탭 (v46) ─────────────────────────────────────────────────
+do
+	local saved_getf, saved_common = cm.get_local_faction, common
+	-- 인게임엔 common이 있고 장군 이름은 현지화 키를 거쳐 나온다. 하니스는 키를 그대로
+	-- 돌려주는 스텁으로 그 경로를 재현한다(없으면 '이름 미상' 폴백만 시험하게 된다).
+	common = { get_localised_string = function(k) return k end }
+	local function mklist(t) return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end } end
+	local function mkunit(cls, pct, xp)
+		return { unit_class = function() return cls end,
+		         percentage_proportion_of_full_strength = function() return pct end,
+		         experience_level = function() return xp end }
+	end
+	-- 군단 스텁: 필드에 없는 값은 nil로 남겨 '읽기 실패'도 재현한다.
+	local function mkforce(o)
+		return {
+			has_general = function() return o.general ~= false end,
+			is_armed_citizenry = function() return o.garrison == true end,
+			is_navy = function() return o.navy == true end,
+			general_character = function() return { get_forename = function() return o.name end } end,
+			strength = function() return o.str end,
+			upkeep = function() return o.upkeep end,
+			morale = function() return o.morale end,
+			active_stance = function() return o.stance end,
+			will_suffer_any_attrition = function() return o.attrition == true end,
+			contains_mercenaries = function() return o.merc == true end,
+			unit_list = function() return mklist(o.units or {}) end,
+			can_recruit_unit_class = function(_, c) return (o.recruit or {})[c] == true end,
+		}
+	end
+	local function mkfac(forces) return { military_force_list = function() return mklist(forces) end } end
+	local function with(fac, S)
+		cm.get_local_faction = function() return fac end
+		return table.concat(TM.build(S or {}, {}), "\n")
+	end
+
+	-- ① 태세 표기: 아는 값은 한글, 모르는 값은 접두사만 떼고 날것으로
+	ok(TM.stance_disp("MILITARY_FORCE_ACTIVE_STANCE_TYPE_AMBUSH") == "매복", "군사: 태세 한글화")
+	ok(TM.stance_disp("MILITARY_FORCE_ACTIVE_STANCE_TYPE_WOBBLE") == "WOBBLE",
+		"군사: 모르는 태세는 지어내지 않고 날값", TM.stance_disp("MILITARY_FORCE_ACTIVE_STANCE_TYPE_WOBBLE"))
+	ok(TM.stance_disp(nil) == nil, "군사: 태세 없음은 nil")
+
+	-- ② unit_class 18종이 전부 묶음에 매핑돼 있다(db 실측표와 어긋나면 실패)
+	local allcls = { "art_fix","art_fld","art_siege","cav_mel","cav_mis","cav_shk","chariot","com",
+	                 "elph","inf_mel","inf_mis","inf_pik","inf_spr","shp_art","shp_mel","shp_mis","shp_trn","spcl" }
+	local missing = {}
+	for _, c in ipairs(allcls) do if not TM.GROUP[c] then missing[#missing + 1] = c end end
+	ok(#missing == 0, "군사: unit_class 18종 전부 분류됨", table.concat(missing, ","))
+
+	-- ③ 정상 진영: 머리줄·구성·전력순 정렬·유지비 비중
+	local a1 = mkforce{ name = "가", str = 8000, upkeep = 1500, stance = "MILITARY_FORCE_ACTIVE_STANCE_TYPE_DEFAULT",
+		units = { mkunit("com",100,3), mkunit("inf_mel",90,2), mkunit("inf_mel",80,1),
+		          mkunit("inf_mis",100,4), mkunit("cav_shk",70,0), mkunit("art_fld",100,1) } }
+	local a2 = mkforce{ name = "나", str = 3000, upkeep = 600,
+		units = { mkunit("inf_mel",40,0), mkunit("inf_spr",50,0) }, recruit = { art_fld = true, inf_mis = true } }
+	local garrison = mkforce{ name = "수비대", garrison = true, str = 9999 }
+	local navy = mkforce{ name = "함대", navy = true, str = 5000 }
+	local out1 = with(mkfac({ a1, a2, garrison, navy }), { regions = 4, income = 3000 })
+	ok(has(out1, "【군사】") and has(out1, "야전군 2"), "군사: 머리줄 — 주둔군·함대는 야전군에서 제외", out1:match("^[^\n]*"))
+	ok(has(out1, "유닛 8"), "군사: 총 유닛 수", out1:match("^[^\n]*"))
+	ok(has(out1, "유지비 2,100") and has(out1, "수입의 70%"), "군사: 유지비와 수입 대비 비중", out1:match("^[^\n]*"))
+	ok(has(out1, "군대밀도 0.50"), "군사: 영토 대비 밀도", out1:match("^[^\n]*"))
+	ok(out1:find("가", 1, true) < out1:find("나", 1, true), "군사: 전력 내림차순 정렬")
+	ok(has(out1, "보병 2") and has(out1, "사격 1") and has(out1, "기병 1") and has(out1, "포병 1"),
+		"군사: 병종 묶음 집계(지휘는 전투 편제에서 제외)", out1:match("구성:[^\n]*"))
+	ok(has(out1, "지금 뽑을 수 있는데 빠진 병종") and has(out1, "야포"),
+		"군사: can_recruit_unit_class로 빠진 병종 지목", out1:match("• 나[^\n]*"))
+	ok(not has(out1, "충격기병"), "군사: 뽑을 수 없는 병종은 권하지 않음")
+	ok(has(out1, "유지비가 수입의 70%"), "군사: 유지비 과다 경고")
+	ok(has(out1, "방어선이 얇습니다"), "군사: 밀도 1 미만 경고")
+	ok(has(out1, "편제 2유닛"), "군사: 정원 미달 군단 지목")
+
+	-- ④ 충원율·소모·태세
+	local a3 = mkforce{ name = "다", str = 100, attrition = true, merc = true,
+		stance = "MILITARY_FORCE_ACTIVE_STANCE_TYPE_AMBUSH",
+		units = { mkunit("inf_mel",30,0), mkunit("inf_mel",30,0) } }
+	local out2 = with(mkfac({ a3 }), { regions = 1 })
+	ok(has(out2, "충원 30%") and has(out2, "보충하세요"), "군사: 충원율 60% 미만 경고", out2:match("1%. [^\n]*"))
+	ok(has(out2, "⚠소모") and has(out2, "소모 지역에 있습니다"), "군사: 소모 위험")
+	ok(has(out2, "태세 매복") and has(out2, "용병"), "군사: 태세·용병 표기")
+	ok(has(out2, "야포가 없습니다") and has(out2, "원거리가 없습니다"), "군사: 포병·원거리 전무 경고")
+
+	-- ⑤ 근접 정체성 종족은 원거리 없다고 잔소리하지 않는다(v33 melee_race 재사용)
+	local out3 = with(mkfac({ a3 }), { regions = 1, melee_race = true })
+	ok(not has(out3, "원거리가 없습니다"), "군사: 근접 종족은 원거리 경고 제외")
+
+	-- ⑥ 야전군 0 / 수집 실패 / 팩션 없음
+	local out4 = with(mkfac({ garrison, navy }), {})
+	ok(has(out4, "야전군이 없습니다") and has(out4, "함대 1"), "군사: 야전군 0은 실상으로", out4:match("^[^\n]*"))
+	local out5 = with({ military_force_list = function() error("boom") end }, {})
+	ok(has(out5, "판단을 보류"), "군사: 수집 실패 = 보류 명시")
+	cm.get_local_faction = function() return nil end
+	ok(has(table.concat(TM.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "군사: 팩션 조회 실패 명시")
+
+	-- ⑦ 전력비는 전략 수집분을 재사용한다(다시 조회하지 않음)
+	local out6 = with(mkfac({ a1 }), { regions = 2,
+		strat = { enemy = { ["wh_main_grn_greenskins"] = { strength = 20000 } } } })
+	ok(has(out6, "전력비") and has(out6, "0.40배"), "군사: 국경 최강 적 대비 전력비", out6:match("─ 전력비[^\n]*"))
+	ok(has(out6, "정면 충돌은 불리"), "군사: 전력비 0.8 미만 경고")
+
+	-- ⑧ 이름을 못 읽어도 줄이 깨지지 않는다(현지화 실패 폴백)
+	common = nil
+	local out7 = with(mkfac({ a1 }), { regions = 1 })
+	ok(has(out7, "이름 미상"), "군사: 장군 이름 조회 실패 폴백", out7:match("1%. [^\n]*"))
+	cm.get_local_faction, common = saved_getf, saved_common
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

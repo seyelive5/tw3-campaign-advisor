@@ -10,7 +10,7 @@
 CA_DOMAINS = CA_DOMAINS or {}
 
 local PENDING = {
-	{ id = "diplo", order = 30, title = "외교", eta = "3순위",
+	{ id = "diplo", order = 30, title = "외교", eta = "다음 차례",
 	  plan = { "누구와 무엇을 맺을 수 있는지 — AI가 실제로 수락할 딜만 추려서",
 	           "태도·관계 수치, 동맹/교역/불가침 현황, 남은 교역로 여유",
 	           "선전포고가 임박한 이웃(CAI 스탠스 감시)" },
@@ -18,11 +18,6 @@ local PENDING = {
 	{ id = "tech", order = 40, title = "연구", eta = "5순위(마지막)",
 	  plan = { "지금 무엇을 연구할지, 우선순위와 이유" },
 	  api  = "has_technology·is_currently_researching만 존재 — 기술 목록 API가 없어 DB 추출이 선행돼야 합니다" },
-	{ id = "army", order = 50, title = "군사", eta = "2순위",
-	  plan = { "군단별 구성(병종 비율)·충원율·경험·유지비",
-	           "뽑을 수 있는데 없는 병종, 지금 군대가 충분한지",
-	           "소모(attrition) 위험·주둔 태세" },
-	  api  = "unit_list·unit_class·percentage_proportion_of_full_strength·can_recruit_unit_class·will_suffer_any_attrition" },
 	{ id = "war", order = 60, title = "전쟁", eta = "4순위",
 	  plan = { "전선별 전력비와 승산, 어디를 먼저 칠지",
 	           "포위·접근 중인 적군, 강화가 필요한 지점",
