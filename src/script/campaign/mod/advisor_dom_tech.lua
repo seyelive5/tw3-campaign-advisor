@@ -84,9 +84,16 @@ local function gather(f, S)
 
 	-- 티어 오름차순으로 이미 정렬돼 있다(생성기가 그렇게 뽑았다).
 	-- 앞쪽부터 훑다가 후보가 충분히 모이면 멈춘다 — 뒤쪽 티어는 어차피 못 고른다.
+	G.have = {}
 	for _, e in ipairs(list) do
 		if #G.avail >= SHOW * 3 or G.budget_hit then break end
 		local mine = owned(e.k)
+		-- 실제로 보유한 기술을 몇 개 남긴다. 원형 트리(카타이·젠취 등)에서 우리
+		-- 모델이 맞는지 검증할 유일한 방법이다 — 사용자가 연구를 하나 끝내면
+		-- 그게 우리가 후보로 꼽았던 것인지, 아니면 '잠겼다'고 본 것인지 드러난다.
+		if mine == true and #G.have < 6 then
+			G.have[#G.have + 1] = string.format("%s(t%s)", e.k, tostring(e.t))
+		end
 		if mine == false then
 			-- 아직 안 한 기술은 따로 모아 둔다. 트리 모델이 안 맞는 진영(원형 트리)에서
 			-- '고를 수 있는 것'이 0개로 나올 때, 빈 화면 대신 이걸 보여 주기 위해서다.
@@ -140,6 +147,15 @@ local function build(S, B)
 		tostring(G.researching), tostring(G.idle), tostring(G.any_left),
 		tostring(#G.avail), tostring(#G.notdone), tostring(G.spent),
 		G.budget_hit and "(예산 소진)" or ""))
+	if G.avail and #G.avail > 0 then
+		local ks = {}
+		for i = 1, math.min(#G.avail, 4) do ks[#ks + 1] = G.avail[i].k .. "(t" .. tostring(G.avail[i].t) .. ")" end
+		say("[v52후보] " .. table.concat(ks, " ") ..
+			(G.odd and "  ※구조불확실 세트 — 실제 보유분과 대조해 모델을 검증할 것" or ""))
+	end
+	if G.have and #G.have > 0 then
+		say("[v52보유] " .. table.concat(G.have, " "))
+	end
 
 	local L = {}
 	local head = {}
