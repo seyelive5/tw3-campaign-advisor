@@ -1051,7 +1051,10 @@ do
 	local out1 = with(mkfac({ reg1, reg2 }, { provinces = 1, complete = 0, tax = 3 }), S1, {})
 	ok(has(out1, "【내정】") and has(out1, "영토 2") and has(out1, "빈 건설칸 2"),
 		"내정: 머리줄(영토·빈칸 총계)", out1:match("^[^\n]*"))
-	ok(has(out1, "세율단계 3"), "내정: 세율 표기")
+	ok(has(out1, "세율 3") and not has(out1, "세율단계"), "내정: 세율은 기본값에서 벗어날 때만 날값으로")
+	-- 인게임 실측값이 100(기본)이었다 — 눈금 의미를 모르므로 기본값이면 아예 말하지 않는다.
+	ok(not has(with(mkfac({ reg1, reg2 }, { provinces = 1, complete = 0, tax = 100 }), S1, {}), "세율"),
+		"내정: 세율 100(기본)은 표기하지 않음")
 	ok(has(out1, "GDP 1,240") and has(out1, "치안 -60"), "내정: 지역 수치")
 	ok(has(out1, "(수도)"), "내정: 속주 수도 표시")
 	ok(out1:find("Altdorf", 1, true) < out1:find("Helmgart", 1, true), "내정: GDP 내림차순 정렬")

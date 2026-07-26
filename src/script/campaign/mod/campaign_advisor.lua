@@ -1889,14 +1889,19 @@ end
 local PANEL_ID   = "advisor_panel"
 local TAB_PREFIX = "advisor_tab_"
 local NAV_PREV, NAV_NEXT = "advisor_nav_prev", "advisor_nav_next"
--- 후보는 전부 reference/ui_layouts에 실존하는 템플릿 파일(경로 규약은 검증된 버튼과 동일).
+-- v41 인게임 결과: square_medium_text_button 성공. 다만 그건 '탭'이 아니라 버튼이라
+-- 활성 표시가 안 되고 텍스트 자식(button_txt)까지 있어 라벨이 두 번 그려졌다.
+-- v42: 같은 폴더에 실재하는 진짜 탭 템플릿을 앞에 세운다(states에 selected 존재 확인).
 local TAB_TEMPLATES = {
-	"ui/templates/square_medium_text_button",
-	"ui/templates/dev_text_button",
-	"ui/templates/parchment_button",
+	"ui/templates/square_medium_text_tab_toggle",   -- selected/selected_hover 보유 · 텍스트 자식 없음
+	"ui/templates/square_medium_text_tab",          -- 같은 계열 · 텍스트 자식 tx
+	"ui/templates/square_medium_text_button",       -- v41 인게임 성공 확인(최후 폴백)
 }
 local LAY = { X = 24, Y = 176, COL = 520, PAD = 18, MAXH = 720, TABH = 30, TABW = 96, GAP = 3 }
-local g_ui = { open = false, tab = nil, page = 1, npages = 1, built = false, tmpl = nil, tabs = {} }
+-- sink: 라벨을 어디에 쓸지(자식 이름 or false=루트) · sel: selected 상태 지원 여부
+-- state0: 비활성 복귀용 최초 상태명 · boxh: 마지막 본문 높이(페이지 버튼 배치에 필요)
+local g_ui = { open = false, tab = nil, page = 1, npages = 1, built = false, tmpl = nil, tabs = {},
+               sink = nil, sel = nil, state0 = nil, boxh = 0 }
 
 local function get_panel()
 	local panel = nil
@@ -1976,6 +1981,7 @@ local function panel_draw(text)
 		pcall(function() textc:SetOpacity(255) end)
 		local box_h = measure(textc, text) or 600    -- 측정 실패 폴백(넉넉히 — 잘리는 것보다 큰 게 낫다)
 		box_h = clamp(box_h, 60, LAY.MAXH + 60)
+		g_ui.boxh = box_h                            -- 페이지 버튼을 본문 아래에 붙이려면 필요
 		pcall(function() textc:ResizeTextResizingComponentToInitialSize(LAY.COL, box_h) end)
 		if bg then
 			pcall(function() bg:SetImagePath("ui/skins/default/tooltip_frame.png", 0, false) end)  -- 자막배너→툴팁프레임
@@ -2027,14 +2033,58 @@ local function make_button(id)
 	return btn
 end
 
--- 라벨: 템플릿마다 텍스트 자식 이름이 다를 수 있어 둘 다 시도하고, 툴팁으로도 남긴다.
+-- 라벨을 쓸 곳은 '하나'여야 한다. v41은 루트와 자식에 둘 다 써서 인게임에서
+-- "대전략 대전략"처럼 두 번 그려졌다(스크린샷 확인). 템플릿에 텍스트 자식이
+-- 있으면 그쪽만, 없으면 루트에만 쓴다. 판별은 첫 버튼에서 한 번만.
+local TEXT_CHILDREN = { "tx", "button_txt", "dy_text" }
+local function label_sink(btn)
+	if g_ui.sink == nil then
+		g_ui.sink = false
+		for _, nm in ipairs(TEXT_CHILDREN) do
+			local c = nil
+			pcall(function() c = find_uicomponent(btn, nm) end)
+			if c then g_ui.sink = nm; break end
+		end
+		proof("v42 탭 라벨 싱크 = " .. (g_ui.sink and ("자식 " .. g_ui.sink) or "루트"), true)
+	end
+	if g_ui.sink == false then return nil end
+	local c = nil
+	pcall(function() c = find_uicomponent(btn, g_ui.sink) end)
+	return c
+end
+
 local function set_label(btn, label)
-	pcall(function() btn:SetStateText(label, "") end)
-	pcall(function()
-		local t = find_uicomponent(btn, "button_txt")
-		if t then t:SetStateText(label, "") end
-	end)
+	local c = label_sink(btn)
+	if c then pcall(function() c:SetStateText(label, "") end)
+	else      pcall(function() btn:SetStateText(label, "") end) end
 	pcall(function() btn:SetTooltipText(label, "", true) end)
+end
+
+-- 라벨이 실제로 들어갔는지 첫 탭에서 한 번만 되읽는다. 안 들어갔다면 탭 줄이
+-- 통째로 빈 칸으로 보이는데 그건 조용한 고장이므로 프루프에 크게 남긴다.
+local function verify_label(btn, label)
+	local got = nil
+	pcall(function() got = (label_sink(btn) or btn):GetStateText() end)
+	if got == label then proof("v42 탭 라벨 확인 OK = " .. tostring(got), true)
+	else proof(string.format("v42 !!! 탭 라벨 확인 실패 — 기대 '%s' 실제 '%s'", label, tostring(got)), true) end
+end
+
+-- 활성 탭 표시: 템플릿에 selected 상태가 있으면 그게 정석이다. 있는지 여부를
+-- 짐작하지 않고, SetState 후 CurrentState로 되읽어 확인한다(둘 다 바닐라 실사용 API).
+-- 없으면 v41처럼 라벨 접두사로 대신한다.
+local function probe_selected(btn)
+	if g_ui.sel ~= nil then return g_ui.sel end
+	g_ui.sel = false
+	pcall(function()
+		local before = btn:CurrentState()
+		g_ui.state0 = before
+		btn:SetState("selected")
+		if btn:CurrentState() == "selected" then g_ui.sel = true end
+		if before then btn:SetState(before) end
+	end)
+	proof(string.format("v42 탭 활성표시 = %s (최초상태 %s)",
+		g_ui.sel and "selected 상태" or "라벨 접두사", tostring(g_ui.state0)), true)
+	return g_ui.sel
 end
 
 local function ui_build_tabs(doms)
@@ -2048,30 +2098,54 @@ local function ui_build_tabs(doms)
 			if w and w > 0 then rw = w end
 			if h and h > 0 then rh = h end
 		end)
-		-- 화면 폭에 맞춰 탭 폭 자동 축소(고정폭이면 저해상도에서 화면 밖으로 나간다).
-		local n = #doms + 2                                     -- 탭 + ◀ ▶
-		LAY.TABW = clamp(math.floor((rw - LAY.X * 2 - n * LAY.GAP) / n), 52, 108)
-		-- 본문 높이 상한도 화면에서 실측(고정 720이면 900p에서 아래가 잘린다).
-		LAY.MAXH = clamp(rh - LAY.Y - 72, 240, 980)
+		-- 본문 폭·높이를 화면에서 뽑는다(고정값이면 해상도마다 남거나 잘린다).
+		LAY.COL  = clamp(math.floor(rw * 0.34), 460, 720)
+		LAY.MAXH = clamp(rh - LAY.Y - 96, 240, 980)         -- 96 = 본문 아래 페이지 버튼 자리
+		-- 탭 줄은 패널 폭에 정확히 맞춘다. v41은 탭 줄이 패널보다 배 가까이 넓어 따로 놀았다.
+		local rowW = LAY.COL + LAY.PAD * 2
+		local n = #doms
+		LAY.TABW = clamp(math.floor((rowW - (n - 1) * LAY.GAP) / n), 52, 160)
 		local y, x = LAY.Y - LAY.TABH - 4, LAY.X
-		local function place(id, label)
-			local b = make_button(id)
-			if not b then return end
-			set_label(b, label)
-			pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
-			pcall(function() b:Resize(LAY.TABW, LAY.TABH) end)
-			local w = LAY.TABW
-			pcall(function() local ww = b:Dimensions(); if ww and ww > 0 then w = ww end end)
-			pcall(function() b:MoveTo(x, y) end)
-			pcall(function() b:SetVisible(false) end)
-			x = x + w + LAY.GAP
-		end
 		for _, d in ipairs(doms) do
-			place(TAB_PREFIX .. d.id, d.title)
-			g_ui.tabs[#g_ui.tabs + 1] = { id = d.id, comp = TAB_PREFIX .. d.id, title = d.title }
+			local b = make_button(TAB_PREFIX .. d.id)
+			if b then
+				local first = (#g_ui.tabs == 0)
+				if first then probe_selected(b) end            -- 첫 버튼에서 한 번만 판별
+				set_label(b, d.title)
+				if first then verify_label(b, d.title) end
+				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
+				pcall(function() b:Resize(LAY.TABW, LAY.TABH) end)
+				pcall(function() b:MoveTo(x, y) end)
+				pcall(function() b:SetVisible(false) end)
+				g_ui.tabs[#g_ui.tabs + 1] = { id = d.id, comp = TAB_PREFIX .. d.id, title = d.title }
+			end
+			x = x + LAY.TABW + LAY.GAP
 		end
-		place(NAV_PREV, "◀"); place(NAV_NEXT, "▶")
-		proof(string.format("v41 탭 %d개 생성(폭 %d, 템플릿 %s)", #g_ui.tabs, LAY.TABW, tostring(g_ui.tmpl)), true)
+		-- 페이지 버튼은 탭 줄이 아니라 본문 아래에 둔다(탭 줄 폭을 잡아먹지 않게).
+		-- 위치는 본문 높이에 따라 달라지므로 ui_place_nav()에서 매번 다시 잡는다.
+		for _, id in ipairs({ NAV_PREV, NAV_NEXT }) do
+			local b = make_button(id)
+			if b then
+				set_label(b, (id == NAV_PREV) and "◀ 이전" or "다음 ▶")
+				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
+				pcall(function() b:Resize(math.floor(LAY.TABW * 1.1), LAY.TABH) end)
+				pcall(function() b:SetVisible(false) end)
+			end
+		end
+		-- 실제로 어떻게 잡혔는지 남긴다 — 다음 회차 레이아웃 보정의 유일한 근거.
+		local dbg = ""
+		pcall(function()
+			local b = find_uicomponent(root, TAB_PREFIX .. doms[1].id)
+			if b then
+				local bw, bh = b:Dimensions()
+				local px, py = b:Position()
+				dbg = string.format(" · 탭1 실측 %sx%s @%s,%s",
+					tostring(bw), tostring(bh), tostring(px), tostring(py))
+			end
+		end)
+		proof(string.format("[v42레이아웃] root=%sx%s COL=%d MAXH=%d TABW=%d 탭%d개 템플릿=%s%s",
+			tostring(rw), tostring(rh), LAY.COL, LAY.MAXH, LAY.TABW,
+			#g_ui.tabs, tostring(g_ui.tmpl), dbg), true)
 	end)
 end
 
@@ -2089,14 +2163,34 @@ local function ui_tabs_visible(vis)
 	end)
 end
 
--- 활성 탭 표시: 템플릿의 selected 상태 이름을 모르므로 라벨 접두사로만 구분(확실한 방법).
+-- 활성 탭 표시. probe_selected가 확인해 준 방식만 쓴다(둘 다 쓰면 v41처럼 겹친다).
 local function ui_mark_active()
 	pcall(function()
 		local root = core:get_ui_root()
 		for _, t in ipairs(g_ui.tabs) do
 			local b = find_uicomponent(root, t.comp)
-			if b then set_label(b, (t.id == g_ui.tab) and ("▶" .. t.title) or t.title) end
+			if b then
+				if g_ui.sel then
+					pcall(function() b:SetState((t.id == g_ui.tab) and "selected" or (g_ui.state0 or "default")) end)
+				else
+					set_label(b, (t.id == g_ui.tab) and ("▶" .. t.title) or t.title)
+				end
+			end
 		end
+	end)
+end
+
+-- 페이지 버튼을 본문 아래 가운데에 놓는다(본문 높이는 그릴 때마다 바뀐다).
+local function ui_place_nav()
+	pcall(function()
+		local root = core:get_ui_root()
+		local w  = math.floor(LAY.TABW * 1.1)
+		local y  = LAY.Y + (g_ui.boxh or 0) + LAY.PAD * 2 + 4
+		local cx = LAY.X + math.floor((LAY.COL + LAY.PAD * 2) / 2)
+		local p  = find_uicomponent(root, NAV_PREV)
+		local nx = find_uicomponent(root, NAV_NEXT)
+		if p  then pcall(function() p:MoveTo(cx - w - 6, y) end) end
+		if nx then pcall(function() nx:MoveTo(cx + 6, y) end) end
 	end)
 end
 
@@ -2296,9 +2390,10 @@ local function ui_render()
 	if g_ui.page < 1 then g_ui.page = 1 end
 	local body = pages[g_ui.page] or ""
 	if g_ui.npages > 1 then
-		body = body .. string.format("\n— %d/%d 쪽 (◀ ▶) —", g_ui.page, g_ui.npages)
+		body = body .. string.format("\n— %d/%d 쪽 —", g_ui.page, g_ui.npages)
 	end
 	panel_draw(body)
+	ui_place_nav()
 	ui_mark_active()
 	ui_tabs_visible(true)
 end

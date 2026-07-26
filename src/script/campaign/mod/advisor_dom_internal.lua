@@ -168,7 +168,9 @@ local function build(S, B)
 			F.complete and (F.complete > 0) and string.format("(완성 %d)", F.complete) or "")
 	end
 	head[#head + 1] = string.format("빈 건설칸 %d", empty_all)
-	if F.tax then head[#head + 1] = string.format("세율단계 %s", tostring(F.tax)) end
+	-- tax_level()은 인게임 실측 결과 1~5 '단계'가 아니라 100(=기본)이 나왔다. 눈금의
+	-- 의미를 모르는 채 "단계"로 부르면 거짓말이 되므로, 기본값에서 벗어났을 때만 날값으로 알린다.
+	if F.tax and F.tax ~= 100 then head[#head + 1] = string.format("세율 %s", tostring(F.tax)) end
 	L[#L + 1] = "【내정】 " .. table.concat(head, " · ")
 
 	-- 종족 자원(있는 진영만): 식량·노예
