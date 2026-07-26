@@ -2071,9 +2071,26 @@ local function set_label(btn, label)
 	for _, st in ipairs(TAB_STATES) do
 		pcall(function() btn:SetState(st) end)   -- 없는 상태면 무시됨(pcall) — 현재 상태에 덧쓸 뿐
 		write_label(btn, label)
+		-- 세로 정렬도 상태별 설정이다(공식 문서: "of the current state"). 기본이 top이라
+		-- 46 높이 탭에서 라벨이 위로 붙었다 — 라벨과 같은 자리에서 같이 넣는다.
+		pcall(function() btn:SetTextVAlign("centre") end)
 	end
 	if cur then pcall(function() btn:SetState(cur) end) end
 	pcall(function() btn:SetTooltipText(label, "", true) end)
+end
+
+-- 템플릿의 button_flame은 "부모에 마우스가 올라갔을 때"만 켜지도록 짜인 발광
+-- 오버레이다(ContextVisibilitySetter, self.ParentContext.IsMouseOver). 그런데
+-- 우리 탭은 root 밑에 단독으로 만든 것이라 부모 컨텍스트가 없어 조건이 평가되지
+-- 않고 계속 켜져 있다 — 인게임에서 라벨을 가리던 파란 박스가 이것이다.
+-- (좌표 역산으로 확인: 22 높이 · dock_offset 0,-6 → 탭 안 y 6~28 위치와 일치)
+local function hide_flame(btn)
+	local hid = false
+	pcall(function()
+		local f = find_uicomponent(btn, "button_flame")
+		if f then f:SetVisible(false); hid = true end
+	end)
+	return hid
 end
 
 -- 라벨이 실제로 들어갔는지 첫 탭에서 한 번만 되읽는다. 안 들어갔다면 탭 줄이
@@ -2131,11 +2148,13 @@ local function ui_build_tabs(doms)
 			probe_selected(btns[1].b)
 		end
 		if nat_h and nat_h > 0 then LAY.TABH = clamp(nat_h, 22, 64) end
+		local flames = 0
 		local y, x = LAY.Y - LAY.TABH - 4, LAY.X
 		for _, e in ipairs(btns) do
 			local b, d = e.b, e.d
 			if b then
 				set_label(b, d.title)
+				flames = flames + (hide_flame(b) and 1 or 0)
 				if #g_ui.tabs == 0 then verify_label(b, d.title) end
 				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
 				pcall(function() b:Resize(LAY.TABW, LAY.TABH) end)
@@ -2151,6 +2170,7 @@ local function ui_build_tabs(doms)
 			local b = make_button(id)
 			if b then
 				set_label(b, (id == NAV_PREV) and "◀ 이전" or "다음 ▶")
+				hide_flame(b)
 				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
 				pcall(function() b:Resize(math.floor(LAY.TABW * 1.1), LAY.TABH) end)
 				pcall(function() b:SetVisible(false) end)
@@ -2163,13 +2183,17 @@ local function ui_build_tabs(doms)
 			if b then
 				local bw, bh = b:Dimensions()
 				local px, py = b:Position()
-				dbg = string.format(" · 탭1 실측 %sx%s @%s,%s",
-					tostring(bw), tostring(bh), tostring(px), tostring(py))
+				local va, tw2, th2 = "?", nil, nil
+				pcall(function() va = tostring(b:GetTextVAlign()) end)
+				pcall(function() tw2, th2 = b:TextDimensions() end)
+				dbg = string.format(" · 탭1 실측 %sx%s @%s,%s 세로정렬=%s 글자 %sx%s",
+					tostring(bw), tostring(bh), tostring(px), tostring(py),
+					va, tostring(tw2), tostring(th2))
 			end
 		end)
-		proof(string.format("[v43레이아웃] root=%sx%s COL=%d MAXH=%d 탭 %dx%d(자연 %sx%s) %d개 템플릿=%s%s",
+		proof(string.format("[v44레이아웃] root=%sx%s COL=%d MAXH=%d 탭 %dx%d(자연 %sx%s) %d개 발광끔 %d개 템플릿=%s%s",
 			tostring(rw), tostring(rh), LAY.COL, LAY.MAXH, LAY.TABW, LAY.TABH,
-			tostring(nat_w), tostring(nat_h), #g_ui.tabs, tostring(g_ui.tmpl), dbg), true)
+			tostring(nat_w), tostring(nat_h), #g_ui.tabs, flames, tostring(g_ui.tmpl), dbg), true)
 	end)
 end
 
