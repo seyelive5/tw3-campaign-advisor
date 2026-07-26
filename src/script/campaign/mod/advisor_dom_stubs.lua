@@ -10,12 +10,9 @@
 CA_DOMAINS = CA_DOMAINS or {}
 
 local PENDING = {
-	{ id = "tech", order = 40, title = "연구", eta = "마지막",
+	{ id = "tech", order = 40, title = "연구", eta = "마지막 — 다음 차례",
 	  plan = { "지금 무엇을 연구할지, 우선순위와 이유" },
 	  api  = "has_technology·is_currently_researching만 존재 — 기술 목록 API가 없어 DB 추출이 선행돼야 합니다" },
-	{ id = "agent", order = 70, title = "기타", eta = "다음 차례",
-	  plan = { "요원·첩보 — 종류별 정원 여유, 적 가시 캐릭터, 배치 제안" },
-	  api  = "agent_cap_remaining·agent_subtype_cap_remaining·get_foreign_visible_characters_for_player" },
 }
 
 for _, p in ipairs(PENDING) do

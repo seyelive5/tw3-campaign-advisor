@@ -36,6 +36,7 @@ cm = {
 -- campaign_advisor보다 먼저 온다 → 도메인이 CA_U를 로드 시점에 잡으면 nil이 된다.
 -- 같은 순서로 실행해 그 실수를 하니스가 잡게 한다.
 ADVISOR_TEST_EXPORTS = true
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_agent.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_military.lua")
@@ -48,11 +49,13 @@ assert(CA_TEST_INTERNAL, "CA_TEST_INTERNAL export 실패")
 assert(CA_TEST_MILITARY, "CA_TEST_MILITARY export 실패")
 assert(CA_TEST_DIPLO, "CA_TEST_DIPLO export 실패")
 assert(CA_TEST_WAR, "CA_TEST_WAR export 실패")
+assert(CA_TEST_AGENT, "CA_TEST_AGENT export 실패")
 local T = CA_TEST
 local TI = CA_TEST_INTERNAL
 local TM = CA_TEST_MILITARY
 local TD = CA_TEST_DIPLO
 local TW = CA_TEST_WAR
+local TA = CA_TEST_AGENT
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -1005,7 +1008,7 @@ do
 	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "has_technology"),
 		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
 	-- 완성된 탭은 자리표시 문구가 남아 있으면 안 된다(등록 중복·삭제 누락 감지)
-	for _, id in ipairs({ "internal", "army", "diplo", "war" }) do
+	for _, id in ipairs({ "internal", "army", "diplo", "war", "agent" }) do
 		local d2 = nil
 		for _, d in ipairs(doms) do if d.id == id then d2 = d end end
 		ok(d2 ~= nil, "완성 탭 등록됨: " .. id)
@@ -1429,6 +1432,106 @@ do
 		enemy = { wh_main_grn_greenskins = { regions = 3, strength = 9000 } } }
 	ok(has(out6, "그린스킨은") and not has(out6, "그린스킨는"), "전쟁: 받침 있는 이름 → '은'",
 		out6:match("[^\n]*그린스킨[^\n]*배로[^\n]*"))
+end
+
+-- ── 19. 기타(요원·첩보) 탭 (v49) ──────────────────────────────────────
+do
+	local saved_getf, saved_common = cm.get_local_faction, common
+	common = { get_localised_string = function(k) return k end }
+	local function mklist(t) return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end } end
+	local function mkchar(o)
+		return {
+			character_type_key = function() return o.tk end,
+			rank = function() return o.rank end,
+			is_wounded = function() return o.wounded == true end,
+			action_points_remaining_percent = function() return o.ap end,
+			get_forename = function() return o.name end,
+			has_region = function() return o.region ~= nil end,
+			region = function() return { name = function() return o.region end,
+				owning_faction = function() return { is_null_interface = function() return false end,
+					name = function() return o.owner end } end } end,
+			faction = function() return { name = function() return o.fk end } end,
+		}
+	end
+	local function mkfac(o)
+		return {
+			name = function() return "me" end,
+			character_list = function() return mklist(o.chars or {}) end,
+			get_foreign_visible_characters_for_player = function() return mklist(o.foreign or {}) end,
+			agent_cap = function(_, k) return (o.cap or {})[k] end,
+			agent_cap_remaining = function(_, k) return (o.rest or {})[k] end,
+		}
+	end
+	local function with(fac, S)
+		cm.get_local_faction = function() return fac end
+		return table.concat(TA.build(S or { faction = "me" }, {}), "\n")
+	end
+
+	-- ① 타입 한글화: 아는 키는 한글, 모르는 키(종족 고유)는 날값으로 살려 둔다
+	ok(TA.tdisp("wizard") == "마법사" and TA.tdisp("spy") == "첩자", "기타: 요원 타입 한글화")
+	ok(TA.tdisp("wh3_dlc_weird_agent") == "wh3_dlc_weird_agent",
+		"기타: 모르는 요원 타입은 지어내지 않고 날값", TA.tdisp("wh3_dlc_weird_agent"))
+
+	-- ② 전형적 상황: 요원 보유 + 빈 자리 + 부상 + 유휴 + 적 요원 침입
+	local f1 = mkfac{
+		chars = {
+			mkchar{ tk = "general", name = "군주" },
+			mkchar{ tk = "general", name = "장군2" },
+			mkchar{ tk = "wizard", name = "그레고르", rank = 4, ap = 100 },
+			mkchar{ tk = "wizard", name = "안나", rank = 2, wounded = true },
+			mkchar{ tk = "spy", name = "요한", rank = 1, ap = 40 },
+		},
+		cap  = { wizard = 3, spy = 1, champion = 2, dignitary = 0 },
+		rest = { wizard = 1, spy = 0, champion = 2, dignitary = 0 },
+		foreign = {
+			mkchar{ tk = "spy", fk = "wh_main_grn_greenskins", region = "reg_mine", owner = "me" },
+			mkchar{ tk = "general", fk = "wh_main_grn_greenskins", region = "reg_far", owner = "grn" },
+			mkchar{ tk = "general", fk = "wh_main_brt_bretonnia", region = "reg_far2", owner = "brt" },
+		} }
+	local out1 = with(f1)
+	ok(has(out1, "【기타 · 요원】") and has(out1, "요원 3명") and has(out1, "군주·장군 2"),
+		"기타: 머리줄 — 지휘관과 요원을 나눠 센다", out1:match("^[^\n]*"))
+	ok(has(out1, "빈 자리 3"), "기타: 빈 자리 합계(마법사1+용사2)", out1:match("^[^\n]*"))
+	ok(has(out1, "마법사 2명") and has(out1, "정원 여유 1") and has(out1, "평균 등급 3.0"),
+		"기타: 종류별 보유·정원·평균 등급", out1:match("• 마법사[^\n]*"))
+	ok(has(out1, "첩자 1명") and has(out1, "정원 참"), "기타: 정원이 찼으면 그렇게 표시")
+	ok(has(out1, "용사 2자리"), "기타: 보유 0인 종류의 빈 자리도 알려 준다(이 탭의 핵심)")
+	ok(not has(out1, "고관"), "기타: 정원 0인 종족 미보유 요원은 표시하지 않음")
+	ok(has(out1, "안나(마법사) 부상"), "기타: 부상 인물")
+	ok(has(out1, "그레고르(마법사) 이번 턴 아직"), "기타: 유휴 인물(이동력 100%)")
+	ok(not has(out1, "요한"), "기타: 이동력을 쓴 인물은 유휴로 세지 않음")
+	ok(has(out1, "그린스킨") and has(out1, "우리 땅에 1"), "기타: 우리 땅에 있는 외국 인물 표시",
+		out1:match("• 그린스킨[^\n]*"))
+	ok(out1:find("그린스킨", 1, true) < out1:find("브레토니아", 1, true),
+		"기타: 우리 땅에 들어온 팩션을 위로 정렬")
+	ok(has(out1, "요원이 우리 땅에 있습니다"), "기타: 적 요원 침입 경고")
+	ok(has(out1, "안나가 부상"), "기타: 조사 — 받침 없는 이름은 '가'")
+
+	-- ③ 요원이 하나도 없을 때
+	local f2 = mkfac{ chars = { mkchar{ tk = "general", name = "군주" } },
+		cap = { spy = 2 }, rest = { spy = 2 } }
+	local out2 = with(f2)
+	ok(has(out2, "보유 요원: 없습니다"), "기타: 요원 0")
+	ok(has(out2, "첩자 2자리"), "기타: 요원 0이어도 뽑을 자리는 알려 준다")
+
+	-- ④ 종족 고유 요원(ASK_CAP에 없는 키)도 빠뜨리지 않는다
+	local f3 = mkfac{ chars = { mkchar{ tk = "wh3_cth_alchemist", name = "연금술사", rank = 3 } },
+		cap = { wh3_cth_alchemist = 2 }, rest = { wh3_cth_alchemist = 1 } }
+	local out3 = with(f3)
+	ok(has(out3, "wh3_cth_alchemist 1명") and has(out3, "wh3_cth_alchemist 1자리"),
+		"기타: 게임이 알려준 고유 요원 키도 정원 조회", out3:match("• wh3[^\n]*"))
+
+	-- ⑤ 수집 실패 / 팩션 없음
+	local out4 = with({ name = function() return "me" end,
+		character_list = function() error("boom") end })
+	ok(has(out4, "판단을 보류"), "기타: 수집 실패 = 보류 명시")
+	cm.get_local_faction = function() return nil end
+	ok(has(table.concat(TA.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "기타: 팩션 조회 실패 명시")
+
+	-- ⑥ 한계를 밝힌다
+	ok(has(out1, "여기 없다고 없는 게 아닙니다"), "기타: 시야 밖은 셀 수 없음을 명시")
+
+	cm.get_local_faction, common = saved_getf, saved_common
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
