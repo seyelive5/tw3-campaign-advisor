@@ -109,20 +109,13 @@ local function gather(f, my_key)
 	for _, k in ipairs(ASK_CAP) do cap_of(k) end
 	for _, k in ipairs(G.order) do cap_of(k) end   -- 종족 고유 요원(게임이 알려준 키)
 
-	-- 종족이 실제로 뽑을 수 있는지는 이쪽이 답할지 모른다 — 아직 미검증이라
-	-- 조언에 쓰지 않고 프루브로만 표본을 모은다(다음 배치에서 채택 판단).
+	-- 시도했다가 접은 것: mf:can_recruit_agent_at_force(요원키).
+	--   '이 종족이 이 요원을 뽑을 수 있는가'를 답해 주길 기대했지만, 턴1(군단 1개)과
+	--   턴42(군단 5개·요원 보유) 두 표본 모두 7종 전부 false였다. 정원이 남은 종류도
+	--   false라 신호가 없다. 매 턴 7회를 태울 이유가 없어 제거한다.
+	--   되살리려면: 요원 모집 건물을 갖춘 세이브에서 다시 재 보고, true가 하나라도
+	--   나오면 '뽑을 수 있는 빈 자리' 기능을 이 API로 복구할 것.
 	G.rec_probe = {}
-	pcall(function()
-		local ml = f:military_force_list()
-		if ml:num_items() > 0 then
-			local mf = ml:item_at(0)
-			for _, k in ipairs(ASK_CAP) do
-				local v = nil
-				pcall(function() v = mf:can_recruit_agent_at_force(k) end)
-				G.rec_probe[#G.rec_probe + 1] = k .. "=" .. tostring(v)
-			end
-		end
-	end)
 
 	-- 우리 눈에 보이는 외국 인물. 팩션별로 묶고, 우리 땅에 서 있는 것만 따로 센다.
 	pcall(function()

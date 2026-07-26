@@ -673,8 +673,14 @@ local function analyze(S, prof)
 
 	-- v40: buffer의 999는 "수입 0 = 산출 불가" 센티넬. 값처럼 문구에 흘리면
 	--   무일푼에게 "금고 과다 적재(999턴치)" 같은 정반대 조언이 나간다 → known 플래그로 차단.
+	-- v53: 장부가 흑자라도 국고가 비어 있으면 위기다. 42턴 벨라코르 실측에서
+	--   국고 7골드 · 버퍼 0.0턴 · 실측 추세 -1412인데 순수입이 +55라
+	--   deficit=false로 잡혀 "흑자 운영 / 국면=소모전"이 나왔다. 순수입만 보면
+	--   일회성 지출(모병·건설)로 금고가 마르는 상황을 통째로 놓친다.
+	local cash_low = (income > 0) and (buffer < 1)
 	local D = { density = density, buffer = buffer, buffer_known = (income > 0), immediate = immediate,
-	            distant = distant, wars = wars, others = others, deficit = deficit, net = net }
+	            distant = distant, wars = wars, others = others, deficit = deficit, net = net,
+	            cash_low = cash_low, money_trouble = (deficit or cash_low) }
 	local cand = {}
 
 	-- 군사 (모집/증원) — 즉각 위협을 먼 전쟁보다 크게 가중
@@ -687,13 +693,17 @@ local function analyze(S, prof)
 			if p > 0 then sc = sc + p; R(rs, p, string.format("영토 %d 대비 필드군 %s 얇음", regions, nro(field))) end
 		end
 		if deficit then sc = sc - 15; R(rs, -15, "적자라 모집 여력 제한") end
-		if net > 0 then sc = sc + 8; R(rs, 8, string.format("순수입 +%s 모집 여력", nro(net))) end
+		-- v53: 국고가 비었으면 순수입이 +라도 지금 뽑을 돈이 없다. 실측(42턴 벨라코르)에서
+		--   국고 7골드에 "순수입 +55로 모집 여력"을 근거로 군사를 1순위로 올렸다.
+		if cash_low then sc = sc - 18; R(rs, -18, string.format("국고 %s뿐 — 당장 뽑을 돈이 없음", nro(treasury))) end
+		if net > 0 and not cash_low then sc = sc + 8; R(rs, 8, string.format("순수입 +%s 모집 여력", nro(net))) end
 		cand[#cand+1] = { key = "military", label = "군사", score = clamp(sc, 0, 100), reasons = finish_reasons(rs) }
 	end
 	-- 경제 (건설/수입기반)
 	do
 		local sc, rs = SEED.cons_base, {}
-		if deficit then sc = sc + 30; R(rs, 30, "적자 — 수입 기반 확충 시급", true) end
+		if deficit then sc = sc + 30; R(rs, 30, "적자 — 수입 기반 확충 시급", true)
+		elseif cash_low then sc = sc + 20; R(rs, 20, "국고 고갈 — 수입 기반부터 세워야 함", true) end
 		if buffer < SEED.buffer_target then
 			local p = math.floor(15 * (SEED.buffer_target - buffer) / SEED.buffer_target + 0.5)   -- 응답곡선(v38)
 			if p > 0 then sc = sc + p; R(rs, p, string.format("재정 버퍼 %.1f턴(CA 권장 %d턴 미만)", buffer, SEED.buffer_target), true) end
@@ -792,7 +802,10 @@ end
 local function overall(S, D)
 	local p = {}
 	if num(S.turn, 99) <= 10 then p[#p+1] = "초반 확장기" end
-	if D.deficit then p[#p+1] = "적자 운영" elseif D.net > 0 then p[#p+1] = "흑자 운영" end
+	-- 국고가 비었으면 장부가 흑자여도 '흑자 운영'이라고 부르지 않는다(v53).
+	if D.deficit then p[#p+1] = "적자 운영"
+	elseif D.cash_low then p[#p+1] = "국고 바닥"
+	elseif D.net > 0 then p[#p+1] = "흑자 운영" end
 	if D.immediate >= 2 then p[#p+1] = "국경 다전선 압박"
 	elseif D.immediate == 1 then p[#p+1] = "국경 교전"
 	elseif D.wars > 0 then p[#p+1] = "원거리 전쟁만"
@@ -820,8 +833,12 @@ local function diagnose(S, D)
 		local mo = clamp((regions / field - 3) / 2, 0, 1) * ((D.immediate >= 2) and 1 or 0.4)
 		put("과확장", mo, "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요")
 	end
-	if D.deficit then
-		put("재정 위기", clamp((4 - buffer) / 3, 0, 1), "적자로 곧 자금이 바닥납니다. 군대 감축이나 수입 확충이 시급합니다")
+	if D.money_trouble then
+		-- v53: 적자만이 아니라 '국고가 비었음'도 위기다. 장부상 +55라도 금고에
+		--   7골드뿐이면 한 번의 지출로 무너진다(42턴 벨라코르 실측).
+		put("재정 위기", clamp((4 - buffer) / 3, 0, 1),
+			D.deficit and "적자로 곧 자금이 바닥납니다. 군대 감축이나 수입 확충이 시급합니다"
+			          or "국고가 비었습니다. 장부는 흑자여도 지출 한 번에 무너집니다. 여유분부터 만드세요")
 	end
 	if D.immediate == 0 and D.net > 0 then
 		put("성장 정체", clamp((buffer - 12) / 8, 0, 1), "평온하나 금고만 쌓였습니다. 재투자·확장으로 우위를 굴리세요")
@@ -1042,8 +1059,12 @@ local function build_prose(S, D, cand, prof)
 	end
 	-- A: 정세 도입 — 절 병합(v35): 경제·수입추세·국경위협을 한 문장으로. 대조는 '이나' 한 번만(남발 금지).
 	local cls = {}
-	local eco_pol = D.deficit and -1 or 1
+	local eco_pol = D.money_trouble and -1 or 1
 	if D.deficit then cls[#cls + 1] = clause("재정은 적자라 주의가 필요", "h", -1)
+	elseif D.cash_low then
+		-- v53: 장부는 흑자인데 금고가 빈 상태. "흑자"로 시작하면 안심시키는 문장이 된다.
+		local tv = tostring(num(S.treasury, 0))
+		cls[#cls + 1] = clause(string.format("국고가 %s%s 사실상 비어 있", tv, josa_ro(tv)), "v", -1)
 	elseif D.net > 0 then
 		local nv = tostring(num(S.net, 0))
 		cls[#cls + 1] = clause(string.format("재정은 순 +%s%s 흑자", nv, josa_ro(nv)), "n", 1)

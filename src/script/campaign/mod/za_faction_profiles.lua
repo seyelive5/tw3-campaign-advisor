@@ -124,7 +124,9 @@ CA_FACTION_PROFILES = {
     tips={"다크 포트리스 지역을 확보해 경제 기반을 마련","영혼을 관리하며 선물·표식으로 군대 질을 강화"},
     resources={ {key="wh3_dlc20_chs_souls", label="영혼", note="군대 소환·강화에 쓰는 자원 — 관리하며 정예를 유지하세요"} },
     -- WoC 4대신 군주: frontend 실측 subtype은 신-접두사(kho/nur/sla/tze). 구 chs_* 키도 병기(무해).
-    lords={ ["wh3_dlc20_kho_valkia"]={name="발키아", note="코른 비행 여왕·근접. 쉼 없이 학살해 코른의 총애를 얻으세요"},
+    -- 벨라코르(그림자 군단)는 42턴 실측에서 "미등록 키"로 떴다 — subtype 접두사가 dae_다.
+    lords={ ["wh3_main_dae_belakor"]={name="벨라코르", note="첫 데몬 프린스·그림자 군단. 속국을 늘려 세를 불리고, 어둠의 지배로 적 진영을 안에서 흔드세요"},
+            ["wh3_dlc20_kho_valkia"]={name="발키아", note="코른 비행 여왕·근접. 쉼 없이 학살해 코른의 총애를 얻으세요"},
             ["wh3_dlc20_nur_festus"]={name="페스투스", note="너글 역병술사. 감염·내구로 소모전을 걸어 갉아먹으세요"},
             ["wh3_dlc20_sla_azazel"]={name="아자젤", note="슬라네쉬 챔피언, 속도·결투. 기동 정예로 몰아치세요"},
             ["wh3_dlc20_tze_vilitch"]={name="빌리치", note="젠취 대마도사. 마법 우위로 적을 무력화하며 술책을 쓰세요"},

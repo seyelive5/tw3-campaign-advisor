@@ -1684,6 +1684,43 @@ do
 	cm.get_local_faction, CA_TECH = saved_getf, saved_tech
 end
 
+-- ── 21. 국고 고갈: 장부 흑자에 속지 않는다 (v53) ──────────────────────
+do
+	-- 42턴 벨라코르 실측 상황 그대로: 국고 7 · 수입 4349 · 순 +55.
+	-- 순수입만 보면 흑자라 예전엔 "흑자 운영 / 국면=소모전"으로 나왔고,
+	-- 심지어 "순수입 +55로 모집 여력"을 근거로 군사를 1순위로 올렸다.
+	local S = baseS{ turn = 42, treasury = 7, income = 4349, net = 55, losing = false,
+		regions = 4, generals = 1, immediate = 1, wars = 1,
+		border_enemies = { "wh_dlc08_nor_norsca" }, war_set = { wh_dlc08_nor_norsca = true } }
+	local D, cand, dg, prose, brief = run(S)
+	ok(D.cash_low == true and D.deficit == false,
+		"국고고갈: 장부는 흑자인데 금고가 빈 상태를 따로 잡는다")
+	ok(D.money_trouble == true, "국고고갈: 적자든 빈 금고든 '돈 문제'로 묶인다")
+	ok(has(brief, "국고 바닥") and not has(brief, "흑자 운영"),
+		"국고고갈: 종합을 '흑자 운영'이라 부르지 않는다", brief:match("▶ 종합[^\n]*"))
+	ok(dg.label == "재정 위기", "국고고갈: 국면이 재정 위기", dg.label)
+	ok(has(dg.note, "지출 한 번에 무너집니다"), "국고고갈: 적자와 다른 문구를 쓴다", dg.note)
+	ok(has(prose, "사실상 비어 있"), "국고고갈: 정세 문장이 안심시키지 않는다",
+		prose:match("정세를 보면[^\n]*"))
+	local mil = nil
+	for _, c in ipairs(cand) do if c.key == "military" then mil = c end end
+	ok(mil ~= nil and has(table.concat(mil.reasons, " ; "), "당장 뽑을 돈이 없음"),
+		"국고고갈: 모병 근거에 돈이 없다는 사실이 들어간다", mil and table.concat(mil.reasons, " ; "))
+	ok(not (mil and has(table.concat(mil.reasons, " ; "), "모집 여력")),
+		"국고고갈: '순수입으로 모집 여력'을 근거로 쓰지 않는다", mil and table.concat(mil.reasons, " ; "))
+
+	-- 반대 방향 회귀: 금고가 넉넉하면 예전 문구가 그대로여야 한다
+	local S2 = baseS{ turn = 42, treasury = 40000, income = 4349, net = 55, losing = false,
+		regions = 4, generals = 4 }
+	local D2, cand2, _, _, brief2 = run(S2)
+	ok(D2.cash_low == false and has(brief2, "흑자 운영"),
+		"국고고갈: 금고가 넉넉하면 종전대로 '흑자 운영'", brief2:match("▶ 종합[^\n]*"))
+	local mil2 = nil
+	for _, c in ipairs(cand2) do if c.key == "military" then mil2 = c end end
+	ok(mil2 ~= nil and has(table.concat(mil2.reasons, " ; "), "모집 여력"),
+		"국고고갈: 금고가 있으면 모집 여력 근거는 유지", mil2 and table.concat(mil2.reasons, " ; "))
+end
+
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
 local report = table.concat(R.lines, "\n")
 local fh = real_open(ROOT .. "/test/out_brain_report.txt", "w")

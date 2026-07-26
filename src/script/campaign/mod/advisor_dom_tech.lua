@@ -98,15 +98,22 @@ local function gather(f, S)
 			-- 아직 안 한 기술은 따로 모아 둔다. 트리 모델이 안 맞는 진영(원형 트리)에서
 			-- '고를 수 있는 것'이 0개로 나올 때, 빈 화면 대신 이걸 보여 주기 위해서다.
 			if #G.notdone < SHOW * 3 then G.notdone[#G.notdone + 1] = e end
-			-- 선행조건은 AND가 아닐 수 있다. DB의 required_parents가 '부모 중 몇 개'를
-			-- 뜻하고(n), 없으면 전부 필요하다.
-			local ready = true
-			if type(e.p) == "table" and #e.p > 0 then
-				local have = 0
-				for _, pk in ipairs(e.p) do if owned(pk) == true then have = have + 1 end end
-				ready = have >= (e.n or #e.p)
+			-- odd 세트에서는 선행조건 판정을 아예 하지 않는다. 42턴 벨라코르 실측으로
+			-- 확정됐다: 보유 중인 ~chariots(티어5)가 ~marauders(티어7)를, ~diplomacy(티어6)가
+			-- ~chosen(티어7)을 부모로 갖는다 — 부모가 자식보다 상위 티어다. 이 트리들에선
+			-- 링크 방향이 뒤집혀 있어 부모-자식으로 뽑은 후보는 틀린다. 그럴듯한 오답을
+			-- 내놓느니 '아직 안 한 기술'만 확실하게 보여 준다.
+			if not G.odd then
+				-- 선행조건은 AND가 아닐 수 있다. DB의 required_parents가 '부모 중 몇 개'를
+				-- 뜻하고(n), 없으면 전부 필요하다.
+				local ready = true
+				if type(e.p) == "table" and #e.p > 0 then
+					local have = 0
+					for _, pk in ipairs(e.p) do if owned(pk) == true then have = have + 1 end end
+					ready = have >= (e.n or #e.p)
+				end
+				if ready then G.avail[#G.avail + 1] = e end
 			end
-			if ready then G.avail[#G.avail + 1] = e end
 		end
 	end
 	return G
@@ -238,8 +245,14 @@ local function build(S, B)
 		rank_by(cat, G.notdone)
 		L[#L + 1] = ""
 		L[#L + 1] = "─ 아직 하지 않은 기술 (선행조건은 확인하지 못했습니다)"
-		L[#L + 1] = "  이 진영의 트리는 동봉한 표의 부모-자식 관계와 맞지 않습니다."
-		L[#L + 1] = "  잠겨 있는 것이 섞여 있을 수 있으니 게임 화면에서 확인하세요."
+		if G.odd then
+			L[#L + 1] = "  이 진영은 기술 트리가 원형으로 짜여 있어 선행조건을 읽을 수 없습니다"
+			L[#L + 1] = "  (표의 부모-자식이 티어와 거꾸로 걸려 있습니다). 잠긴 것이 섞여 있으니"
+			L[#L + 1] = "  게임 화면에서 확인하세요 — 틀린 추천을 내놓지 않으려고 판단을 보류합니다."
+		else
+			L[#L + 1] = "  이 진영의 트리는 동봉한 표의 부모-자식 관계와 맞지 않습니다."
+			L[#L + 1] = "  잠겨 있는 것이 섞여 있을 수 있으니 게임 화면에서 확인하세요."
+		end
 		list_out(G.notdone)
 	else
 		L[#L + 1] = ""
