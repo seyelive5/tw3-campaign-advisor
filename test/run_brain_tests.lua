@@ -40,7 +40,7 @@ dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_agent.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_military.lua")
-dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_stubs.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_tech.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_war.lua")
 dofile(ROOT .. "/src/script/campaign/mod/za_faction_profiles.lua")
 dofile(ROOT .. "/src/script/campaign/mod/campaign_advisor.lua")
@@ -50,12 +50,14 @@ assert(CA_TEST_MILITARY, "CA_TEST_MILITARY export 실패")
 assert(CA_TEST_DIPLO, "CA_TEST_DIPLO export 실패")
 assert(CA_TEST_WAR, "CA_TEST_WAR export 실패")
 assert(CA_TEST_AGENT, "CA_TEST_AGENT export 실패")
+assert(CA_TEST_TECH, "CA_TEST_TECH export 실패")
 local T = CA_TEST
 local TI = CA_TEST_INTERNAL
 local TM = CA_TEST_MILITARY
 local TD = CA_TEST_DIPLO
 local TW = CA_TEST_WAR
 local TA = CA_TEST_AGENT
+local TT = CA_TEST_TECH
 
 -- ── 어서션 엔진 ───────────────────────────────────────────────────────
 local R = { pass = 0, fail = 0, lines = {} }
@@ -1001,17 +1003,12 @@ do
 	for _, d in ipairs(doms) do titles[#titles + 1] = d.title end
 	ok(table.concat(titles, "") == "대전략내정외교연구군사전쟁기타", "도메인: 탭 제목", table.concat(titles, "/"))
 
-	-- 미구현 탭은 '비어 있음'이 아니라 '아직 없음 + 무엇이 들어갈지'를 말한다
-	local stub = nil
-	for _, d in ipairs(doms) do if d.id == "tech" then stub = d end end
-	local sline = table.concat(stub.build(), "\n")
-	ok(has(sline, "아직 만들지 않았습니다") and has(sline, "여기에 들어갈 것") and has(sline, "has_technology"),
-		"자리표시 탭: 미구현 사실 + 예정 내용 + 근거 API 명시")
-	-- 완성된 탭은 자리표시 문구가 남아 있으면 안 된다(등록 중복·삭제 누락 감지)
-	for _, id in ipairs({ "internal", "army", "diplo", "war", "agent" }) do
+	-- 7탭 전부 구현 완료 — 자리표시 문구가 어디에도 남아 있으면 안 된다
+	-- (도메인 파일을 지우고 등록만 남는 실수, 반대로 등록을 빠뜨리는 실수를 같이 잡는다)
+	for _, id in ipairs({ "grand", "internal", "diplo", "tech", "army", "war", "agent" }) do
 		local d2 = nil
 		for _, d in ipairs(doms) do if d.id == id then d2 = d end end
-		ok(d2 ~= nil, "완성 탭 등록됨: " .. id)
+		ok(d2 ~= nil, "탭 등록됨: " .. id)
 	end
 end
 
@@ -1547,6 +1544,144 @@ do
 	ok(has(out1, "여기 없다고 없는 게 아닙니다"), "기타: 시야 밖은 셀 수 없음을 명시")
 
 	cm.get_local_faction, common = saved_getf, saved_common
+end
+
+-- ── 20. 연구 탭 (v51) ─────────────────────────────────────────────────
+do
+	local saved_getf, saved_tech = cm.get_local_faction, CA_TECH
+	-- 작은 가짜 기술표. 실제 표(advisor_db_tech.lua)와 같은 형식이다.
+	--   t1 ── t2a(내정) ── t3(내정, 부모 2 중 1)
+	--     └── t2b(군사) ──┘
+	CA_TECH = {
+		sets = {
+			emp = { sub = "sc_emp", cul = "cul_emp", fac = nil },
+			cth = { sub = "sc_cth", cul = "cul_cth", fac = "fac_cth" },
+			-- 뿌리가 없는 원형 트리. 카타이·젠취의 실제 DB가 이 모양이라
+			-- 부모-자식만 보면 '고를 수 있는 기술'이 0개로 나온다.
+			ring = { sub = "sc_ring", cul = "cul_ring", fac = nil },
+		},
+		list = {
+			ring = {
+				{ k = "r1", t = 0, c = "c", p = { "r2" } },
+				{ k = "r2", t = 0, c = "m", p = { "r1" } },
+			},
+			emp = {
+				{ k = "t1",  t = 1, c = "c" },
+				{ k = "t2a", t = 2, c = "c", p = { "t1" } },
+				{ k = "t2b", t = 2, c = "b", p = { "t1" } },
+				{ k = "t3",  t = 3, c = "b", p = { "t2a", "t2b" }, n = 1 },
+				{ k = "t4",  t = 4, c = "c", p = { "t3" } },
+			},
+			cth = { { k = "c1", t = 1, c = "e" } },
+		},
+	}
+	local CALLS = { n = 0 }
+	local function mkfac(o)
+		return {
+			has_technology = function(_, k) CALLS.n = CALLS.n + 1; return (o.owned or {})[k] == true end,
+			is_currently_researching = function() return o.researching end,
+			research_queue_idle = function() return o.idle end,
+			num_completed_technologies = function() return o.done end,
+			has_available_technologies = function() return o.any_left end,
+		}
+	end
+	local function with(fac, S, B)
+		cm.get_local_faction = function() return fac end
+		return table.concat(TT.build(S or {}, B or {}), "\n")
+	end
+
+	-- ① 노드셋 선택: 팩션 > 서브컬처 > 컬처
+	local k1, h1 = TT.pick_set{ faction = "fac_cth", subculture = "sc_emp" }
+	ok(k1 == "cth" and h1 == "팩션", "연구: 팩션 지정이 서브컬처보다 우선", tostring(k1) .. "/" .. tostring(h1))
+	local k2, h2 = TT.pick_set{ subculture = "sc_emp" }
+	ok(k2 == "emp" and h2 == "서브컬처", "연구: 서브컬처로 매칭")
+	local k3, h3 = TT.pick_set{ culture = "cul_emp" }
+	ok(k3 == "emp" and h3 == "컬처", "연구: 컬처로 매칭")
+	local k4, h4 = TT.pick_set{ subculture = "sc_unknown" }
+	ok(k4 == nil and h4 == "일치 없음", "연구: 못 찾으면 못 찾았다고 한다")
+	-- 팩션 전용 세트를 컬처만 같다고 남에게 주면 안 된다. 실제 DB에서 제국이
+	-- emp_civ_reworkd(73개)와 emp_wulfhart(42개) 사이를 실행마다 오갔다.
+	CA_TECH.sets.emp_ll = { sub = "sc_emp", cul = "cul_emp", fac = "fac_ll" }
+	CA_TECH.list.emp_ll = { { k = "x1", t = 0, c = "c" } }
+	for _ = 1, 20 do                                  -- pairs 순서에 흔들리지 않아야 한다
+		local kk = TT.pick_set{ subculture = "sc_emp" }
+		if kk ~= "emp" then ok(false, "연구: 팩션 전용 세트가 새어 들어옴", tostring(kk)); break end
+	end
+	ok(TT.pick_set{ subculture = "sc_emp" } == "emp", "연구: 팩션 전용 세트는 그 팩션에만")
+	ok(TT.pick_set{ faction = "fac_ll", subculture = "sc_emp" } == "emp_ll",
+		"연구: 해당 팩션이면 전용 세트를 받는다")
+	CA_TECH.sets.emp_ll, CA_TECH.list.emp_ll = nil, nil
+
+	-- ② 선행조건: 부모를 다 가져야 열리고, n이 있으면 그만큼만 있으면 열린다
+	local f1 = mkfac{ owned = { t1 = true }, researching = true, done = 1 }
+	local out1 = with(f1, { subculture = "sc_emp" })
+	ok(has(out1, "t2a") and has(out1, "t2b"), "연구: 선행조건 충족분만 후보", out1:match("1%. [^\n]*"))
+	ok(not has(out1, "4. ") and not has(out1, "t4"), "연구: 선행조건 미충족은 후보에서 제외")
+	local f2 = mkfac{ owned = { t1 = true, t2a = true }, researching = true, done = 2 }
+	local out2 = with(f2, { subculture = "sc_emp" })
+	ok(has(out2, "t3"), "연구: 부모 2개 중 1개(n=1)면 열린다", out2:match("[^\n]*t3[^\n]*"))
+	ok(not has(out2, "t4"), "연구: t3을 안 가졌으면 t4는 아직")
+
+	-- ③ 우선 계열: 재정이 빠듯하면 내정, 국경에 적이 있으면 군사
+	local c1, w1 = TT.priority({}, { D = { buffer = 1.4, buffer_known = true } })
+	ok(c1 == "c" and w1:find("재정") ~= nil, "연구: 재정 빠듯 → 내정 계열", w1)
+	local c2 = TT.priority({ border_enemies = { "e1" } }, { D = { buffer = 20, buffer_known = true } })
+	ok(c2 == "b", "연구: 국경에 적 → 전투 효과 계열")
+	local c3 = TT.priority({}, { D = { buffer = 20, buffer_known = true } })
+	ok(c3 == "c", "연구: 급한 전선 없으면 내정 계열")
+	local c4 = TT.priority({ income = 0 }, {})
+	ok(c4 == "c", "연구: 수입 0도 내정 우선")
+
+	-- ④ 권하는 계열이 위로 정렬된다
+	local out3 = with(f1, { subculture = "sc_emp", border_enemies = { "e1" } }, { D = { buffer = 20, buffer_known = true } })
+	ok(out3:find("t2b", 1, true) < out3:find("t2a", 1, true), "연구: 전시엔 전투 효과 기술이 위로")
+	ok(has(out3, "◀ 지금 권하는 계열"), "연구: 권하는 계열 표시")
+	-- 권하는 계열이 목록에 없으면 그 사실을 말한다(조언과 목록이 어긋나면 안 된다)
+	local ring2 = { { k = "b1", t = 0, c = "b" }, { k = "b2", t = 1, c = "b" } }
+	CA_TECH.sets.onlyb = { sub = "sc_onlyb" }; CA_TECH.list.onlyb = ring2
+	local out3b = with(mkfac{ owned = {}, researching = true, done = 0 },
+		{ subculture = "sc_onlyb" }, { D = { buffer = 1.0, buffer_known = true } })
+	ok(has(out3b, "지도 효과 기술이 없습니다"),
+		"연구: 권하는 계열이 목록에 없으면 그렇게 말한다", out3b:match("  다만[^\n]*"))
+
+	-- ⑤ 연구가 멈춰 있으면 그게 가장 중요한 한 줄이다
+	local out4 = with(mkfac{ owned = { t1 = true }, researching = false, idle = true, done = 1 },
+		{ subculture = "sc_emp" })
+	ok(has(out4, "연구가 멈춰 있습니다") and has(out4, "⚠ 연구 안 함"),
+		"연구: 유휴 상태를 크게 알린다", out4:match("[^\n]*멈춰[^\n]*"))
+
+	-- ⑥ 표에 없는 진영은 짐작하지 않는다
+	local out5 = with(mkfac{ researching = true, done = 0 }, { subculture = "sc_모드종족" })
+	ok(has(out5, "추천을 만들지 못했습니다") and has(out5, "짐작으로 권하지 않겠습니다"),
+		"연구: 표에 없는 진영은 보류", out5:match("[^\n]*찾지 못했습니다[^\n]*"))
+
+	-- ⑥-b 트리 모델이 이 진영과 안 맞을 때(카타이·젠취 같은 원형 트리):
+	--     게임은 연구할 게 있다는데 후보가 0개 → 틀린 확신 대신 사실만 말한다
+	local out5b = with(mkfac{ owned = {}, researching = true, any_left = true, done = 0 },
+		{ subculture = "sc_ring" })
+	ok(has(out5b, "아직 하지 않은 기술") and has(out5b, "선행조건은 확인하지 못했습니다"),
+		"연구: 트리 모델 불일치 시 확실한 것만 보여 준다", out5b:match("─ 아직[^\n]*"))
+	ok(has(out5b, "r1") and has(out5b, "r2"), "연구: 폴백에도 목록은 나온다")
+	ok(not has(out5b, "선행조건 충족"), "연구: 폴백에서 '충족'이라고 주장하지 않는다")
+
+	-- ⑦ 다 올렸으면 다 올렸다고
+	local out6 = with(mkfac{ owned = { t1=true,t2a=true,t2b=true,t3=true,t4=true },
+		researching = false, any_left = false, done = 5 }, { subculture = "sc_emp" })
+	ok(has(out6, "더 연구할 것이 없습니다"), "연구: 트리 완주")
+
+	-- ⑧ 호출 예산을 넘지 않는다
+	CALLS.n = 0
+	with(f1, { subculture = "sc_emp" })
+	ok(CALLS.n <= TT.BUDGET, "연구: has_technology 호출이 예산 이내", CALLS.n .. "/" .. TT.BUDGET)
+
+	-- ⑨ 효과를 못 읽는다는 사실을 밝힌다
+	ok(has(out1, "개별 효과는 읽지 않았습니다"), "연구: 효과 미조회를 명시")
+
+	-- ⑩ 팩션 조회 실패
+	cm.get_local_faction = function() return nil end
+	ok(has(table.concat(TT.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "연구: 팩션 조회 실패 명시")
+
+	cm.get_local_faction, CA_TECH = saved_getf, saved_tech
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────
