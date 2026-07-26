@@ -2053,10 +2053,26 @@ local function label_sink(btn)
 	return c
 end
 
-local function set_label(btn, label)
+-- 텍스트는 '상태별'로 따로 저장된다 — v42 인게임에서 확인: SetState("selected")로
+-- 바꾸는 순간 활성 탭 라벨만 사라졌다(그 상태엔 텍스트를 쓴 적이 없으므로).
+-- 호버·클릭도 상태를 바꾸니 같은 일이 난다. 그래서 쓸 수 있는 상태 전부에 미리 넣는다.
+-- 목록은 square_medium_text_tab_toggle의 states 실측 + 인게임이 알려준 최초상태 active.
+local TAB_STATES = { "default", "active", "inactive", "hover", "down", "down_off",
+                     "selected", "selected_hover", "selected_down", "selected_down_off", "selected_inactive" }
+local function write_label(btn, label)
 	local c = label_sink(btn)
 	if c then pcall(function() c:SetStateText(label, "") end)
 	else      pcall(function() btn:SetStateText(label, "") end) end
+end
+
+local function set_label(btn, label)
+	local cur = nil
+	pcall(function() cur = btn:CurrentState() end)
+	for _, st in ipairs(TAB_STATES) do
+		pcall(function() btn:SetState(st) end)   -- 없는 상태면 무시됨(pcall) — 현재 상태에 덧쓸 뿐
+		write_label(btn, label)
+	end
+	if cur then pcall(function() btn:SetState(cur) end) end
 	pcall(function() btn:SetTooltipText(label, "", true) end)
 end
 
@@ -2105,14 +2121,22 @@ local function ui_build_tabs(doms)
 		local rowW = LAY.COL + LAY.PAD * 2
 		local n = #doms
 		LAY.TABW = clamp(math.floor((rowW - (n - 1) * LAY.GAP) / n), 52, 160)
+		-- 버튼을 먼저 만들고, 손대기 전에 템플릿 자연 높이를 잰다. v42에서 30으로 눌렀더니
+		-- 라벨이 프레임 위로 밀려났다 — 실제 상태 블록이 46 높이로 짜여 있기 때문이다.
+		local btns = {}
+		for _, d in ipairs(doms) do btns[#btns + 1] = { d = d, b = make_button(TAB_PREFIX .. d.id) } end
+		local nat_w, nat_h = nil, nil
+		if btns[1] and btns[1].b then
+			pcall(function() nat_w, nat_h = btns[1].b:Dimensions() end)   -- 상태를 건드리기 전에
+			probe_selected(btns[1].b)
+		end
+		if nat_h and nat_h > 0 then LAY.TABH = clamp(nat_h, 22, 64) end
 		local y, x = LAY.Y - LAY.TABH - 4, LAY.X
-		for _, d in ipairs(doms) do
-			local b = make_button(TAB_PREFIX .. d.id)
+		for _, e in ipairs(btns) do
+			local b, d = e.b, e.d
 			if b then
-				local first = (#g_ui.tabs == 0)
-				if first then probe_selected(b) end            -- 첫 버튼에서 한 번만 판별
 				set_label(b, d.title)
-				if first then verify_label(b, d.title) end
+				if #g_ui.tabs == 0 then verify_label(b, d.title) end
 				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
 				pcall(function() b:Resize(LAY.TABW, LAY.TABH) end)
 				pcall(function() b:MoveTo(x, y) end)
@@ -2143,9 +2167,9 @@ local function ui_build_tabs(doms)
 					tostring(bw), tostring(bh), tostring(px), tostring(py))
 			end
 		end)
-		proof(string.format("[v42레이아웃] root=%sx%s COL=%d MAXH=%d TABW=%d 탭%d개 템플릿=%s%s",
-			tostring(rw), tostring(rh), LAY.COL, LAY.MAXH, LAY.TABW,
-			#g_ui.tabs, tostring(g_ui.tmpl), dbg), true)
+		proof(string.format("[v43레이아웃] root=%sx%s COL=%d MAXH=%d 탭 %dx%d(자연 %sx%s) %d개 템플릿=%s%s",
+			tostring(rw), tostring(rh), LAY.COL, LAY.MAXH, LAY.TABW, LAY.TABH,
+			tostring(nat_w), tostring(nat_h), #g_ui.tabs, tostring(g_ui.tmpl), dbg), true)
 	end)
 end
 
