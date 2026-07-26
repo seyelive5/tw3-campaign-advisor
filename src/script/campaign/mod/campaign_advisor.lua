@@ -2059,10 +2059,18 @@ end
 -- 목록은 square_medium_text_tab_toggle의 states 실측 + 인게임이 알려준 최초상태 active.
 local TAB_STATES = { "default", "active", "inactive", "hover", "down", "down_off",
                      "selected", "selected_hover", "selected_down", "selected_down_off", "selected_inactive" }
-local function write_label(btn, label)
-	local c = label_sink(btn)
-	if c then pcall(function() c:SetStateText(label, "") end)
-	else      pcall(function() btn:SetStateText(label, "") end) end
+-- 텍스트를 받는 컴포넌트와 상태를 바꾸는 컴포넌트는 반드시 같아야 한다.
+-- 지금 템플릿은 싱크가 루트라 문제가 없지만, 폴백 템플릿(square_medium_text_tab)은
+-- 싱크가 자식 tx다 — 그때 부모 상태만 돌리면 자식의 다른 상태는 여전히 빈칸이 된다.
+local function write_label(btn, label, st)
+	local t = label_sink(btn) or btn
+	if st then pcall(function() t:SetState(st) end) end
+	pcall(function() t:SetStateText(label, "") end)
+	-- 정렬도 '현재 상태의' 설정이라 여기서 같이 넣는다(공식 문서 문구 그대로).
+	-- v44 인게임에서 GetTextVAlign()이 "left"(가로값)를 돌려줬다 — 두 함수의 축이
+	-- 문서와 어긋나 있다는 뜻이라 어느 쪽이 어느 축이든 결과가 같도록 둘 다 centre로 둔다.
+	pcall(function() t:SetTextVAlign("centre") end)
+	pcall(function() t:SetTextHAlign("centre") end)
 end
 
 local function set_label(btn, label)
@@ -2070,10 +2078,7 @@ local function set_label(btn, label)
 	pcall(function() cur = btn:CurrentState() end)
 	for _, st in ipairs(TAB_STATES) do
 		pcall(function() btn:SetState(st) end)   -- 없는 상태면 무시됨(pcall) — 현재 상태에 덧쓸 뿐
-		write_label(btn, label)
-		-- 세로 정렬도 상태별 설정이다(공식 문서: "of the current state"). 기본이 top이라
-		-- 46 높이 탭에서 라벨이 위로 붙었다 — 라벨과 같은 자리에서 같이 넣는다.
-		pcall(function() btn:SetTextVAlign("centre") end)
+		write_label(btn, label, st)
 	end
 	if cur then pcall(function() btn:SetState(cur) end) end
 	pcall(function() btn:SetTooltipText(label, "", true) end)
@@ -2084,6 +2089,9 @@ end
 -- 우리 탭은 root 밑에 단독으로 만든 것이라 부모 컨텍스트가 없어 조건이 평가되지
 -- 않고 계속 켜져 있다 — 인게임에서 라벨을 가리던 파란 박스가 이것이다.
 -- (좌표 역산으로 확인: 22 높이 · dock_offset 0,-6 → 탭 안 y 6~28 위치와 일치)
+-- 페이지 버튼 폭은 생성할 때와 배치할 때 두 곳에서 쓰인다 — 한 군데서만 계산한다.
+local function nav_w() return math.floor(LAY.TABW * 1.1) end
+
 local function hide_flame(btn)
 	local hid = false
 	pcall(function()
@@ -2122,7 +2130,6 @@ end
 
 local function ui_build_tabs(doms)
 	if g_ui.built then return end
-	g_ui.built = true
 	pcall(function()
 		local root = core:get_ui_root()
 		local rw, rh = 1600, 900
@@ -2131,6 +2138,7 @@ local function ui_build_tabs(doms)
 			if w and w > 0 then rw = w end
 			if h and h > 0 then rh = h end
 		end)
+		g_ui.rh = rh                                        -- 페이지 버튼이 화면 밖으로 나가지 않게
 		-- 본문 폭·높이를 화면에서 뽑는다(고정값이면 해상도마다 남거나 잘린다).
 		LAY.COL  = clamp(math.floor(rw * 0.34), 460, 720)
 		LAY.MAXH = clamp(rh - LAY.Y - 96, 240, 980)         -- 96 = 본문 아래 페이지 버튼 자리
@@ -2172,7 +2180,7 @@ local function ui_build_tabs(doms)
 				set_label(b, (id == NAV_PREV) and "◀ 이전" or "다음 ▶")
 				hide_flame(b)
 				pcall(function() b:SetCanResizeWidth(true); b:SetCanResizeHeight(true) end)
-				pcall(function() b:Resize(math.floor(LAY.TABW * 1.1), LAY.TABH) end)
+				pcall(function() b:Resize(nav_w(), LAY.TABH) end)
 				pcall(function() b:SetVisible(false) end)
 			end
 		end
@@ -2183,18 +2191,26 @@ local function ui_build_tabs(doms)
 			if b then
 				local bw, bh = b:Dimensions()
 				local px, py = b:Position()
-				local va, tw2, th2 = "?", nil, nil
+				-- 두 정렬 게터를 같이 찍는다: v44에서 VAlign이 "left"를 돌려줘
+				-- 두 함수의 축이 문서와 어긋난 것으로 보인다. 실제 어느 쪽이 어느 축인지 확인용.
+				local va, ha, oyt, oyb, tw2, th2 = "?", "?", nil, nil, nil, nil
 				pcall(function() va = tostring(b:GetTextVAlign()) end)
+				pcall(function() ha = tostring(b:GetTextHAlign()) end)
+				pcall(function() oyt, oyb = b:TextYOffset() end)
 				pcall(function() tw2, th2 = b:TextDimensions() end)
-				dbg = string.format(" · 탭1 실측 %sx%s @%s,%s 세로정렬=%s 글자 %sx%s",
-					tostring(bw), tostring(bh), tostring(px), tostring(py),
-					va, tostring(tw2), tostring(th2))
+				dbg = string.format(" · 탭1 실측 %sx%s @%s,%s 정렬(V=%s H=%s) Y여백 %s/%s 글자 %sx%s",
+					tostring(bw), tostring(bh), tostring(px), tostring(py), va, ha,
+					tostring(oyt), tostring(oyb), tostring(tw2), tostring(th2))
 			end
 		end)
-		proof(string.format("[v44레이아웃] root=%sx%s COL=%d MAXH=%d 탭 %dx%d(자연 %sx%s) %d개 발광끔 %d개 템플릿=%s%s",
+		proof(string.format("[v45레이아웃] root=%sx%s COL=%d MAXH=%d 탭 %dx%d(자연 %sx%s) %d개 발광끔 %d개 템플릿=%s%s",
 			tostring(rw), tostring(rh), LAY.COL, LAY.MAXH, LAY.TABW, LAY.TABH,
 			tostring(nat_w), tostring(nat_h), #g_ui.tabs, flames, tostring(g_ui.tmpl), dbg), true)
 	end)
+	-- 하나도 못 만들었다면 '만들었다'고 표시하지 않는다 — 다음 클릭에 다시 시도해야
+	-- 한 번의 실패로 세션 내내 탭이 사라진 채로 남지 않는다.
+	g_ui.built = (#g_ui.tabs > 0)
+	if not g_ui.built then proof("v45 !!! 탭을 하나도 만들지 못했습니다 — 다음 클릭에 재시도", true) end
 end
 
 local function ui_tabs_visible(vis)
@@ -2221,7 +2237,10 @@ local function ui_mark_active()
 				if g_ui.sel then
 					pcall(function() b:SetState((t.id == g_ui.tab) and "selected" or (g_ui.state0 or "default")) end)
 				else
-					set_label(b, (t.id == g_ui.tab) and ("▶" .. t.title) or t.title)
+					-- 폴백 경로: set_label은 상태를 전부 순회하므로 싸지 않다.
+					-- 표시가 실제로 바뀔 때만 다시 쓴다.
+					local want = (t.id == g_ui.tab) and ("▶" .. t.title) or t.title
+					if t.shown ~= want then set_label(b, want); t.shown = want end
 				end
 			end
 		end
@@ -2232,8 +2251,11 @@ end
 local function ui_place_nav()
 	pcall(function()
 		local root = core:get_ui_root()
-		local w  = math.floor(LAY.TABW * 1.1)
+		local w  = nav_w()
 		local y  = LAY.Y + (g_ui.boxh or 0) + LAY.PAD * 2 + 4
+		-- 본문이 아주 길면(상한 + 여유분) 이 y가 화면 아래로 넘어간다 → 눌러 앉힌다.
+		local ymax = (g_ui.rh or 900) - LAY.TABH - 8
+		if y > ymax then y = ymax end
 		local cx = LAY.X + math.floor((LAY.COL + LAY.PAD * 2) / 2)
 		local p  = find_uicomponent(root, NAV_PREV)
 		local nx = find_uicomponent(root, NAV_NEXT)
@@ -2359,12 +2381,15 @@ end
 -- ── 턴당 1회 기반 수집(v41) — 탭을 바꿔도 다시 긁지 않는다 ───────────
 -- 클릭마다 전부 수집하면 도메인이 늘어난 만큼 그대로 느려진다. 기반 상태는
 -- 턴당 1회, 도메인 본문은 탭을 처음 열 때 1회만 계산해 B.content에 캐시.
-local g_base = { turn = -2, content = {} }
+local g_base = { turn = -2, content = {}, pages = {} }
 local function ensure_base()
 	local turn = -1
 	pcall(function() turn = cm:turn_number() end)
-	if g_base.turn == turn and g_base.S then return g_base end
-	local B = { turn = turn, content = {} }
+	-- 'S가 있으면'이 아니라 '이번 턴에 시도했으면'으로 판정한다. 수집이 실패하면
+	-- S가 nil이라, 예전 조건으로는 탭을 누를 때마다 무거운 수집을 통째로 다시 돌리고
+	-- 프루프에도 같은 예외를 계속 쌓았다. 실패도 턴당 한 번으로 묶는다.
+	if g_base.turn == turn and g_base.tried then return g_base end
+	local B = { turn = turn, content = {}, pages = {}, tried = true }
 	local ok, err = pcall(function()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
@@ -2421,8 +2446,9 @@ local function content_for(id)
 	end
 	if type(lines) == "string" then lines = split_lines(lines) end
 	if type(lines) ~= "table" or #lines == 0 then
-		lines = { "⚠ 이 항목을 읽지 못했습니다 — 짐작 대신 판단을 보류합니다.",
-		          ok and "(수집은 됐지만 내용이 비었습니다)" or "(수집 중 오류)" }
+		-- 실패 문구는 캐시하지 않는다 — 캐시해 버리면 일시적 실패가 그 턴 내내 굳는다.
+		return { "⚠ 이 항목을 읽지 못했습니다 — 짐작 대신 판단을 보류합니다.",
+		         ok and "(수집은 됐지만 내용이 비었습니다)" or "(수집 중 오류)" }
 	end
 	B.content[id] = lines
 	return lines
@@ -2432,7 +2458,14 @@ local function ui_render()
 	local lines = content_for(g_ui.tab)
 	local textc = panel_text()
 	if not textc then get_panel(); textc = panel_text() end
-	local pages = paginate(textc, lines)
+	-- 페이지 분할은 줄 수만큼 실측을 반복하므로 싸지 않다. 페이지를 넘길 때마다
+	-- 다시 계산하지 않도록 탭별로 캐시한다(기반 캐시와 같이 턴이 바뀌면 버려진다).
+	g_base.pages = g_base.pages or {}
+	local pages = g_base.pages[g_ui.tab]
+	if not pages then
+		pages = paginate(textc, lines)
+		g_base.pages[g_ui.tab] = pages
+	end
 	g_ui.npages = #pages
 	if g_ui.page > g_ui.npages then g_ui.page = g_ui.npages end
 	if g_ui.page < 1 then g_ui.page = 1 end
