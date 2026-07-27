@@ -195,7 +195,14 @@ local function build(S, B)
 	local L = {}
 	local total_agents, free_slots = 0, 0
 	for _, k in ipairs(G.order) do total_agents = total_agents + G.agents[k].n end
-	for _, c in pairs(G.cap) do if type(c.rest) == "number" and c.rest > 0 then free_slots = free_slots + c.rest end end
+	-- '보유한 종류'만 센다. v50에서 아래 목록은 G.order로 고쳤는데 이 머리줄만
+	-- G.cap 전체를 돌고 있었다 — 42턴 벨라코르(용사만 보유)에서 wizard·spy·
+	-- engineer·runesmith·dignitary의 정원까지 더해 "빈 자리 5"가 떴다.
+	-- 카오스 진영에 룬장인 자리를 세는 셈이고, 하단 면책문과도 정면으로 어긋난다.
+	for _, k in ipairs(G.order) do
+		local c = G.cap[k]
+		if c and type(c.rest) == "number" and c.rest > 0 then free_slots = free_slots + c.rest end
+	end
 
 	local head = { string.format("요원 %d명", total_agents) }
 	if free_slots > 0 then head[#head + 1] = string.format("빈 자리 %d", free_slots) end

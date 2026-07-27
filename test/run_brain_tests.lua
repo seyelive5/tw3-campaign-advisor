@@ -1172,6 +1172,24 @@ do
 		"내정: 전부 못 지으면 경고가 목록보다 먼저", tostring(i_warn) .. "/" .. tostring(i_first))
 	ok(not has(outR, "✗국고부족"), "내정: 국고가 넉넉하면 부족 표시를 달지 않는다")
 
+	-- ①-h 못 짓는 상태에서 '빈 건설칸부터'를 지금 할 일 1순위로 올리지 않는다.
+	--   42턴 실측: "가장 싼 1,000금짜리도 못 짓습니다" 바로 아래에
+	--   "1. 빈 건설칸 3개 — 채우세요"가 나왔다. 할 수 없는 일이 1순위였다.
+	ok(has(outB, "건설이 전부 멈췄습니다") and not has(outB, "위 건설 항목 참고"),
+		"내정: 국고 고갈이면 '빈칸 채우기' 대신 '수입부터'", outB:match("%d%. 국고[^\n]*"))
+	ok(has(outR, "위 건설 항목 참고") and not has(outR, "건설이 전부 멈췄습니다"),
+		"내정: 돈이 있으면 평소 문구 그대로")
+
+	-- ①-i 업그레이드도 잘라낸 개수를 밝힌다(빈칸 쪽만 '외 N'을 붙이고 있었다)
+	local many = {}
+	for i = 1, 5 do
+		many[#many + 1] = mkreg{ key = "wh_main_reg_up" .. i, prov = "p", gdp = 100,
+			slots = { mkslot(true, true, TPL, "wh_main_emp_barracks_1") } }
+	end
+	local outU = with(mkfac(many, {}), { treasury = 99999 }, {})
+	ok(has(outU, "올릴 수 있는 곳 3군데 더"),
+		"내정: 업그레이드도 잘라낸 개수를 밝힌다", outU:match("  … 올릴[^\n]*"))
+
 	-- ② 포위가 치안보다 먼저 온다(심각도 순)
 	local rs = mkreg{ key = "wh_main_reg_altdorf", prov = "p", gdp = 100, po = -60, siege = true, slots = {} }
 	local out2 = with(mkfac({ rs }, {}), {}, {})
@@ -1582,7 +1600,11 @@ do
 	local out1 = with(f1)
 	ok(has(out1, "【기타 · 요원】") and has(out1, "요원 3명") and has(out1, "군주·장군 2"),
 		"기타: 머리줄 — 지휘관과 요원을 나눠 센다", out1:match("^[^\n]*"))
-	ok(has(out1, "빈 자리 3"), "기타: 빈 자리 합계(마법사1+용사2)", out1:match("^[^\n]*"))
+	-- 머리줄의 빈 자리는 '보유한 종류'만 센다. 예전엔 미보유 champion의 2자리까지
+	-- 더해 3을 냈다 — 42턴 벨라코르(용사만 보유)에서 룬장인·마법사 자리를 세어
+	-- "빈 자리 5"가 뜬 것이 같은 원인이다. 보유는 마법사(여유1)·첩자(0)뿐이니 1.
+	ok(has(out1, "빈 자리 1"), "기타: 빈 자리는 보유한 종류만 센다", out1:match("^[^\n]*"))
+	ok(not has(out1, "빈 자리 3"), "기타: 미보유 종류의 정원을 머리줄에 더하지 않는다")
 	ok(has(out1, "마법사 2명") and has(out1, "정원 여유 1") and has(out1, "평균 등급 3.0"),
 		"기타: 종류별 보유·정원·평균 등급", out1:match("• 마법사[^\n]*"))
 	ok(has(out1, "첩자 1명") and has(out1, "정원 참"), "기타: 정원이 찼으면 그렇게 표시")

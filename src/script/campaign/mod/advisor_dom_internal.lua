@@ -232,9 +232,11 @@ local function label_of(lv, cost, turns, tag, want, purse)
 	return string.format("%s(%s금 %s%s)%s", nm, comma(cost), when, why and (" " .. why) or "", short)
 end
 
+-- 반환: (표시줄들, 요약). 요약은 아래 '지금 손볼 곳'이 우선순위를 정하는 데 쓴다 —
+-- 국고가 비어 아무것도 못 짓는데 "빈 건설칸부터 채우세요"라고 하면 안 되기 때문이다.
 local function build_construction(G, S, D)
 	if not CA_BLDQ or not CA_BLD then
-		return { "─ 건설: 건물표를 읽지 못했습니다 — 판단을 보류합니다." }
+		return { "─ 건설: 건물표를 읽지 못했습니다 — 판단을 보류합니다." }, {}
 	end
 	local purse = (S and tonumber(S.treasury)) or nil
 
@@ -269,7 +271,7 @@ local function build_construction(G, S, D)
 
 	if #withfree == 0 and #ups == 0 then
 		L[#L + 1] = "  지금 지을 자리도, 올릴 건물도 없습니다(읽은 범위 안에서)."
-		return L
+		return L, { nfree = nfree, nups = 0 }
 	end
 
 	-- 지금 국고로 감당되는 게 하나도 없으면 그것부터 말한다. 못 짓는 걸 아는 채로
@@ -341,8 +343,11 @@ local function build_construction(G, S, D)
 				CA_BLDQ.name(u.from) or u.from,
 				label_of(u.to, u.cost, u.turns, u.tag, u.want, purse), rdisp(u.region))
 		end
+		-- 빈칸 쪽은 "외 N"을 붙이면서 여긴 7개 중 2개만 보여주고 입을 닫고 있었다.
+		-- 잘라낸 것을 말하지 않으면 "이게 전부"로 읽힌다.
+		if #ups > 2 then L[#L + 1] = string.format("  … 올릴 수 있는 곳 %d군데 더", #ups - 2) end
 	end
-	return L
+	return L, { nfree = nfree, nups = #ups, broke = broke, cheapest = cheapest, purse = purse }
 end
 
 -- ── 정착지가 없는 진영(호드 등) — 내정 대신 실상을 말한다 ────────────
@@ -461,8 +466,10 @@ local function build(S, B)
 	end
 
 	-- 건설 (v54: 슬롯 템플릿 + 건물 DB로 '무엇을'까지 말한다)
+	local clines, cinfo = build_construction(G, S, D)
+	cinfo = cinfo or {}
 	L[#L + 1] = ""
-	for _, line in ipairs(build_construction(G, S, D)) do L[#L + 1] = line end
+	for _, line in ipairs(clines) do L[#L + 1] = line end
 
 	-- 지금 손볼 곳(심각도 순, 최대 5)
 	local todo = {}
@@ -487,7 +494,13 @@ local function build(S, B)
 		for _, r in ipairs(rs) do
 			if (r.slots_empty or 0) > 0 and (not most or (r.slots_empty or 0) > (most.slots_empty or 0)) then most = r end
 		end
-		if most then
+		if cinfo.broke then
+			-- 돈이 없으면 빈칸은 '지금' 할 일이 아니다. 42턴 실측에서 국고 7골드에
+			-- "가장 싼 1,000금짜리도 못 짓습니다"라고 해 놓고, 바로 아래 지금 손볼 곳
+			-- 1순위로 "빈 건설칸 3개"를 올렸다. 할 수 없는 일을 1순위로 두면 안 된다.
+			add(string.format("국고 %s — 건설이 전부 멈췄습니다. 빈칸 %d개를 채우려면 수입부터입니다.",
+				comma(cinfo.purse or 0), empty_all))
+		elseif most then
 			-- 구체적인 추천은 위 '건설' 절에 있다. 여기서는 급한 정도만 알린다.
 			add(string.format("빈 건설칸 %d개 — 가장 많이 빈 곳은 %s(%d칸). 위 건설 항목 참고.",
 				empty_all, rdisp(most.key), most.slots_empty or 0))

@@ -208,11 +208,18 @@ local function build(S, B)
 		end)
 	end
 	local function list_out(arr)
+		-- 목록은 권하는 계열을 앞으로 정렬한다. 그래서 상위 SHOW개가 전부 그 계열이면
+		-- "◀ 지금 권하는 계열"이 전부에 붙어 구분 정보가 0이 된다(42턴 실측: 6개 전부).
+		-- 섞여 있을 때만 표시해서 마커가 실제로 뭔가를 가리키게 한다.
+		local mixed = false
+		for i = 1, math.min(#arr, SHOW) do
+			if (arr[i].c == cat) ~= (arr[1].c == cat) then mixed = true; break end
+		end
 		for i = 1, math.min(#arr, SHOW) do
 			local e = arr[i]
 			L[#L + 1] = string.format("%d. %s", i, tname(e.k))
 			L[#L + 1] = string.format("   티어 %s · %s 계열%s", tostring(e.t or "?"),
-				CAT_KO[e.c] or "기타", (e.c == cat) and " ◀ 지금 권하는 계열" or "")
+				CAT_KO[e.c] or "기타", (mixed and e.c == cat) and " ◀ 지금 권하는 계열" or "")
 		end
 		if #arr > SHOW then L[#L + 1] = string.format("  … 외 %d개", #arr - SHOW) end
 		L[#L + 1] = ""
