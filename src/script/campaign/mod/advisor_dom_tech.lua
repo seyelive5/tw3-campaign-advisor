@@ -60,21 +60,91 @@ local function pick_set(S)
 	return nil, "일치 없음"
 end
 
+-- ── CCO — 가용성을 게임에 직접 묻는다 (v64) ──────────────────────────
+--   "이 진영은 트리 구조를 읽을 수 없다"고 물러섰던 문제의 진짜 해법.
+--   common.get_context_value는 게임 UI가 쓰는 조회 계층(CCO)을 Lua에 연다.
+--   근거(전부 실물): tw_autogen/input/wh3/cco/documentation.html —
+--     CcoCampaignFaction.TechnologyList → CcoCampaignTechnology(list)
+--     CcoCampaignTechnology.IsAvailable  "true if available to be researched"
+--     CcoCampaignTechnology.IsResearched · RecordContext(CcoTechnologyRecord)
+--   리스트 순회 패턴은 바닐라 실사용: wh3_battle_prologue_values.lua:94-95
+--     (AbilityList.Size / AbilityList.At(i).RecordKey — 같은 문법).
+--   이게 되면 원형 트리(odd) 포함 전 종족에서 '지금 고를 수 있는 기술'이
+--   추측이 아니라 게임의 답이 된다. DB는 계열(c/b/x)·티어 장식에만 쓴다.
+--   실패하면(패치로 CCO 변경 등) 조용히 DB 모델로 폴백 — 화면은 티 안 낸다.
+local CCO_CAP = 400          -- 기술 목록 순회 상한(팩션당 보통 50~150개)
+local function gather_cco(f, G, byk)
+	local cqi = nil
+	pcall(function() cqi = f:command_queue_index() end)
+	if type(cqi) ~= "number" then return false end
+	local n = nil
+	pcall(function() n = common.get_context_value("CcoCampaignFaction", cqi, "TechnologyList.Size") end)
+	if type(n) ~= "number" or n <= 0 then return false end
+	G.cco_n, G.cco_key_src = n, nil
+	local got_any = false
+	for i = 0, math.min(n, CCO_CAP) - 1 do
+		local base = string.format("TechnologyList.At(%d)", i)
+		local key = nil
+		pcall(function() key = common.get_context_value("CcoCampaignFaction", cqi, base .. ".RecordContext.Key") end)
+		if type(key) == "string" and key ~= "" then
+			G.cco_key_src = G.cco_key_src or "RecordContext.Key"
+		else
+			-- 폴백: 문서상 NodeKey도 있다(노드 키 — 이름 해석엔 못 쓰지만 존재 확인용)
+			pcall(function() key = common.get_context_value("CcoCampaignFaction", cqi, base .. ".NodeKey") end)
+			if type(key) == "string" and key ~= "" then G.cco_key_src = G.cco_key_src or "NodeKey" end
+		end
+		if type(key) == "string" and key ~= "" then
+			local avail, done = nil, nil
+			pcall(function() avail = common.get_context_value("CcoCampaignFaction", cqi, base .. ".IsAvailable") end)
+			pcall(function() done = common.get_context_value("CcoCampaignFaction", cqi, base .. ".IsResearched") end)
+			if avail == true or done == true then got_any = true end
+			local d = byk and byk[key] or nil
+			if done == true then
+				if #G.have < 6 then G.have[#G.have + 1] = string.format("%s(t%s)", key, tostring(d and d.t or "?")) end
+			elseif avail == true then
+				G.avail[#G.avail + 1] = { k = key, t = d and d.t or nil, c = d and d.c or nil, p = {} }
+			end
+		end
+	end
+	G.cco_capped = n > CCO_CAP
+	-- 하나도 못 읽었으면(전부 nil/false — 컨텍스트 미지원) 실패로 보고 폴백.
+	return got_any or #G.avail > 0
+end
+
 -- ── 수집 ──────────────────────────────────────────────────────────────
 local function gather(f, S)
-	local G = { avail = {}, notdone = {}, done = 0, total = 0, spent = 0, budget_hit = false }
+	local G = { avail = {}, notdone = {}, have = {}, done = 0, total = 0, spent = 0, budget_hit = false }
 	pcall(function() G.researching = f:is_currently_researching() end)
 	pcall(function() G.idle = f:research_queue_idle() end)
 	pcall(function() G.done = f:num_completed_technologies() end)
 	pcall(function() G.any_left = f:has_available_technologies() end)
 
 	G.set, G.how = pick_set(S)
+	G.odd = G.set and (CA_TECH.sets[G.set] or {}).odd == true or false
+	local byk = {}
+	if G.set then
+		for _, e in ipairs(CA_TECH.list[G.set]) do byk[e.k] = e end
+		G.total = #CA_TECH.list[G.set]
+	end
+
+	-- 1순위: 게임에 직접 묻기(CCO). 세트를 못 찾은 진영(모드 종족)도 이 길로 답이 나온다.
+	G.src = "cco"
+	local ok = false
+	pcall(function() ok = gather_cco(f, G, byk) end)
+	if ok then
+		table.sort(G.avail, function(a, b)
+			if (a.t or 99) ~= (b.t or 99) then return (a.t or 99) < (b.t or 99) end
+			return a.k < b.k
+		end)
+		return G
+	end
+	G.src = "db"
+	G.avail, G.have = {}, {}
 	if not G.set then return G end
-	G.odd = (CA_TECH.sets[G.set] or {}).odd == true   -- 생성기가 표시한 '구조 불확실'
 
 	local list = CA_TECH.list[G.set]
-	G.total = #list
 
+	-- ── DB 폴백 경로 (CCO 실패 시에만) ──
 	-- has_technology는 같은 키를 여러 번 물을 수 있다(선행조건 확인) → 메모.
 	local memo = {}
 	local function owned(k)
@@ -88,29 +158,18 @@ local function gather(f, S)
 	end
 
 	-- 티어 오름차순으로 이미 정렬돼 있다(생성기가 그렇게 뽑았다).
-	-- 앞쪽부터 훑다가 후보가 충분히 모이면 멈춘다 — 뒤쪽 티어는 어차피 못 고른다.
-	G.have = {}
 	for _, e in ipairs(list) do
 		if #G.avail >= SHOW * 3 or G.budget_hit then break end
 		local mine = owned(e.k)
-		-- 실제로 보유한 기술을 몇 개 남긴다. 원형 트리(카타이·젠취 등)에서 우리
-		-- 모델이 맞는지 검증할 유일한 방법이다 — 사용자가 연구를 하나 끝내면
-		-- 그게 우리가 후보로 꼽았던 것인지, 아니면 '잠겼다'고 본 것인지 드러난다.
 		if mine == true and #G.have < 6 then
 			G.have[#G.have + 1] = string.format("%s(t%s)", e.k, tostring(e.t))
 		end
 		if mine == false then
-			-- 아직 안 한 기술은 따로 모아 둔다. 트리 모델이 안 맞는 진영(원형 트리)에서
-			-- '고를 수 있는 것'이 0개로 나올 때, 빈 화면 대신 이걸 보여 주기 위해서다.
 			if #G.notdone < SHOW * 3 then G.notdone[#G.notdone + 1] = e end
-			-- odd 세트에서는 선행조건 판정을 아예 하지 않는다. 42턴 벨라코르 실측으로
-			-- 확정됐다: 보유 중인 ~chariots(티어5)가 ~marauders(티어7)를, ~diplomacy(티어6)가
-			-- ~chosen(티어7)을 부모로 갖는다 — 부모가 자식보다 상위 티어다. 이 트리들에선
-			-- 링크 방향이 뒤집혀 있어 부모-자식으로 뽑은 후보는 틀린다. 그럴듯한 오답을
-			-- 내놓느니 '아직 안 한 기술'만 확실하게 보여 준다.
+			-- odd 세트(원형 트리)는 링크 방향이 실측과 어긋난다(v53: 4/6 모순,
+			-- 역방향 가설도 2/6 모순 — v64 검증). DB로는 판정하지 않는다.
+			-- CCO가 있는 실게임에서는 이 분기 자체에 안 온다.
 			if not G.odd then
-				-- 선행조건은 AND가 아닐 수 있다. DB의 required_parents가 '부모 중 몇 개'를
-				-- 뜻하고(n), 없으면 전부 필요하다.
 				local ready = true
 				if type(e.p) == "table" and #e.p > 0 then
 					local have = 0
@@ -155,16 +214,20 @@ local function build(S, B)
 	end
 
 	local G = gather(f, S)
-	say(string.format("[v51연구프로브] 노드셋=%s(%s) 표기술=%s 완료=%s 연구중=%s 유휴=%s 남음=%s | 후보=%s 미완료=%s 호출=%s%s",
-		tostring(G.set), tostring(G.how), tostring(G.total), tostring(G.done),
+	say(string.format("[v51연구프로브] src=%s 노드셋=%s(%s) 표기술=%s 완료=%s 연구중=%s 유휴=%s 남음=%s | 후보=%s 미완료=%s 호출=%s%s",
+		tostring(G.src), tostring(G.set), tostring(G.how), tostring(G.total), tostring(G.done),
 		tostring(G.researching), tostring(G.idle), tostring(G.any_left),
 		tostring(#G.avail), tostring(#G.notdone), tostring(G.spent),
 		G.budget_hit and "(예산 소진)" or ""))
+	if G.src == "cco" then
+		say(string.format("[v64CCO] 목록=%s 키출처=%s%s — 가용성을 게임에 직접 물었다(추측 아님)",
+			tostring(G.cco_n), tostring(G.cco_key_src), G.cco_capped and " (상한 도달)" or ""))
+	end
 	if G.avail and #G.avail > 0 then
 		local ks = {}
 		for i = 1, math.min(#G.avail, 4) do ks[#ks + 1] = G.avail[i].k .. "(t" .. tostring(G.avail[i].t) .. ")" end
 		say("[v52후보] " .. table.concat(ks, " ") ..
-			(G.odd and "  ※구조불확실 세트 — 실제 보유분과 대조해 모델을 검증할 것" or ""))
+			((G.odd and G.src == "db") and "  ※구조불확실 세트(DB 폴백) — 보유분과 대조할 것" or ""))
 	end
 	if G.have and #G.have > 0 then
 		say("[v52보유] " .. table.concat(G.have, " "))
@@ -186,10 +249,10 @@ local function build(S, B)
 		L[#L + 1] = "연구는 돌아가고 있습니다. 끝나면 아래에서 다음 것을 고르세요."
 	end
 
-	if not G.set then
-		say(string.format("[연구] 노드셋 미일치(%s) — 팩션·서브컬처·컬처 전부 불일치(모드/신규 진영?)", tostring(G.how)))
-		L[#L + 1] = ""
-		L[#L + 1] = "─ 이 진영의 연구 추천은 지원하지 않습니다."
+	-- 표에 없는 진영(모드 등)이라도 CCO가 답을 줬으면 그대로 진행한다.
+	-- CCO까지 실패한 극단이면 추천 없이 상태까지만 — 안 되는 기능을 화면에 알리지 않는다(지시).
+	if not G.set and G.src ~= "cco" then
+		say(string.format("[연구] 노드셋 미일치(%s) + CCO 실패 — 추천 생략", tostring(G.how)))
 		return L
 	end
 
@@ -214,62 +277,59 @@ local function build(S, B)
 		for i = 1, math.min(#arr, SHOW) do
 			if (arr[i].c == cat) ~= (arr[1].c == cat) then mixed = true; break end
 		end
+		local any_cat = false
+		for _, e in ipairs(arr) do if e.c then any_cat = true; break end end
 		for i = 1, math.min(#arr, SHOW) do
 			local e = arr[i]
 			L[#L + 1] = string.format("%d. %s", i, tname(e.k))
-			L[#L + 1] = string.format("   티어 %s · %s 계열%s", tostring(e.t or "?"),
-				CAT_KO[e.c] or "기타", (mixed and e.c == cat) and " ◀ 지금 권하는 계열" or "")
+			-- CCO 경로에서 우리 표 밖의 기술(모드 등)은 티어·계열이 없다 → 상세줄 생략.
+			local d = {}
+			if e.t then d[#d + 1] = string.format("티어 %d", e.t) end
+			if e.c then d[#d + 1] = (CAT_KO[e.c] or "기타") .. " 계열" ..
+				((mixed and e.c == cat) and " ◀ 지금 권하는 계열" or "") end
+			if #d > 0 then L[#L + 1] = "   " .. table.concat(d, " · ") end
 		end
 		if #arr > SHOW then L[#L + 1] = string.format("  … 외 %d개", #arr - SHOW) end
-		L[#L + 1] = ""
-		L[#L + 1] = "─ 무엇부터"
-		L[#L + 1] = "  " .. why
-		-- 권하는 계열이 목록에 하나도 없으면 그렇게 말한다. v51 눈검증에서
-		-- "지도 효과 쪽이 먼저"라고 해 놓고 목록은 전부 전투 효과인 경우가 나왔다.
-		local any = false
-		for _, e in ipairs(arr) do if e.c == cat then any = true; break end end
-		if not any then
-			L[#L + 1] = string.format("  다만 지금 고를 수 있는 것 중엔 %s 기술이 없습니다 — %s부터 가야 합니다.",
-				CAT_KO[cat] or "그 계열", CAT_KO[arr[1] and arr[1].c] or "있는 것")
+		if any_cat then
+			L[#L + 1] = ""
+			L[#L + 1] = "─ 무엇부터"
+			L[#L + 1] = "  " .. why
+			-- 권하는 계열이 목록에 하나도 없으면 그렇게 말한다. v51 눈검증에서
+			-- "지도 효과 쪽이 먼저"라고 해 놓고 목록은 전부 전투 효과인 경우가 나왔다.
+			local any = false
+			for _, e in ipairs(arr) do if e.c == cat then any = true; break end end
+			if not any then
+				L[#L + 1] = string.format("  다만 지금 고를 수 있는 것 중엔 %s 기술이 없습니다 — %s부터 가야 합니다.",
+					CAT_KO[cat] or "그 계열", CAT_KO[arr[1] and arr[1].c] or "있는 것")
+			end
 		end
 	end
 
 	if #G.avail > 0 then
+		-- CCO 경로면 이 목록은 게임이 준 답이라 정확하고, DB 경로(비odd)면 검증된 모델이다.
+		-- 어느 쪽이든 화면은 같다 — 확실한 목록에 단서를 달지 않는다.
 		rank_by(cat, G.avail)
 		L[#L + 1] = ""
-		if G.odd then
-			-- odd 세트(원형 트리 — 링크 방향 역전 실측, v53)는 선행조건에 확신이 없다.
-			-- 그 진단은 프루프([v52후보]의 표시)에 있고, 화면엔 사용자에게 필요한
-			-- 한 가지만 남긴다: 잠긴 게 섞여 있을 수 있다는 사실.
-			L[#L + 1] = "─ 다음 연구 후보"
-			L[#L + 1] = "  (일부는 아직 잠겨 있을 수 있습니다)"
-		else
-			L[#L + 1] = "─ 지금 고를 수 있는 기술"
-		end
+		L[#L + 1] = "─ 지금 고를 수 있는 기술"
 		list_out(G.avail)
 	elseif G.any_left == false then
 		L[#L + 1] = ""
 		L[#L + 1] = "─ 더 연구할 것이 없습니다. 기술 트리를 다 올렸습니다."
-	elseif #G.notdone > 0 then
-		-- 후보 0인데 잔여 있음 = 트리 모델이 이 진영과 안 맞는 것(odd 세트가 대표).
-		-- 원인 진단은 프루프로, 화면엔 남은 기술 목록 + 잠김 주의 한 줄만.
-		say(G.odd and "[연구] odd 세트 — 선행조건 판정 보류(링크 방향 역전, v53 실측)"
-		          or "[연구] 표-실제 불일치 — 후보 0인데 미완료 잔존")
+	elseif G.src == "db" and not G.odd and #G.notdone > 0 then
+		say("[연구] 표-실제 불일치 — 후보 0인데 미완료 잔존")
 		rank_by(cat, G.notdone)
 		L[#L + 1] = ""
 		L[#L + 1] = "─ 아직 연구하지 않은 기술"
-		L[#L + 1] = "  (일부는 아직 잠겨 있을 수 있습니다)"
 		list_out(G.notdone)
 	else
-		say("[연구] 후보·미완료 모두 0인데 any_left ~= false — 표와 실제 불일치")
-		L[#L + 1] = ""
-		L[#L + 1] = "─ 남은 연구를 찾지 못했습니다."
+		-- odd 세트 DB 폴백 등 — 확실한 추천을 만들 수 없으면 섹션 자체를 내지 않는다(지시:
+		-- 안 되는 것을 화면에 알리지 말 것). 실게임에선 CCO가 답을 주므로 여기 올 일이 드물다.
+		say(string.format("[연구] 추천 생략 — src=%s odd=%s notdone=%d",
+			tostring(G.src), tostring(G.odd), #G.notdone))
 	end
 	if G.budget_hit then
 		say(string.format("[연구] has_technology 예산 %d회 소진 — 뒤쪽 기술 미확인", BUDGET))
-		L[#L + 1] = "  (기술이 많아 앞쪽 위주로 확인했습니다)"
 	end
-	-- "개별 효과 수치는 읽지 않았다"류 한계 설명은 화면에서 뺐다(개발자 메타 발언).
 	return L
 end
 

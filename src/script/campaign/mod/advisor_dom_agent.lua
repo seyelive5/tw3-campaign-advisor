@@ -281,7 +281,7 @@ local function build(S, B)
 		end
 		if #G.foreign > 5 then L[#L + 1] = string.format("  … 외 %d팩션", #G.foreign - 5) end
 		if G.foreign_capped then
-			L[#L + 1] = string.format("  (전체 %d명 중 %d명 기준)", G.foreign_n, MAX_FOREIGN)
+			say(string.format("[기타] 외국 인물 %d명 중 %d명만 스캔(상한)", G.foreign_n, MAX_FOREIGN))
 		end
 	end
 

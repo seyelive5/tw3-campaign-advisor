@@ -1271,9 +1271,10 @@ do
 	local regX = mkreg{ key = "wh_main_reg_x", prov = "p", gdp = 10,
 		slots = { mkslot(true, false, "tpl_that_does_not_exist") } }
 	local outX = with(mkfac({ regX }, {}), {}, {})
-	ok(has(outX, "지을 수 있는 건물이 없습니다"),
-		"내정: 모르는 슬롯 템플릿은 '없음'으로 정직하게", outX:match("• X[^\n]*"))
-	ok(not has(outX, "슬롯 규칙"), "내정: 개발자 어휘(슬롯 규칙)가 화면에 안 나온다")
+	-- v64: 후보를 못 만든 지역은 화면에서 조용히 사라진다 — "없습니다" 고백도 없다(지시).
+	-- 원인은 프루프에만 남는다.
+	ok(not has(outX, "지을 수 있는") and not has(outX, "슬롯 규칙") and not has(outX, "─ 건설"),
+		"내정: 후보 없는 지역은 건설 섹션 자체가 안 나온다", outX:match("─ 건설[^\n]*"))
 
 	-- ①-f 태그 순위 — 태그는 '효과가 많은 계열 순'이라 앞일수록 그 건물의 본업이다.
 	--   치안이 1순위인 술집과 3순위인 야간보초를 같은 취급 하면 조언이 엉뚱해진다.
@@ -1498,7 +1499,8 @@ do
 	-- ⑧ 이름을 못 읽어도 줄이 깨지지 않는다(현지화 실패 폴백)
 	common = nil
 	local out7 = with(mkfac({ a1 }), { regions = 1 })
-	ok(has(out7, "이름 미상"), "군사: 장군 이름 조회 실패 폴백", out7:match("1%. [^\n]*"))
+	-- v64: "이름 미상"은 결손 고백이라 화면 금지 — 중립 명칭 "지휘관"으로 대체
+	ok(has(out7, "지휘관") and not has(out7, "미상"), "군사: 장군 이름 조회 실패 폴백", out7:match("1%. [^\n]*"))
 	cm.get_local_faction, common = saved_getf, saved_common
 end
 
@@ -1555,8 +1557,10 @@ do
 	ok(has(out1, "【외교】") and has(out1, "전쟁 3") and has(out1, "동맹 1"), "외교: 머리줄", out1:match("^[^\n]*"))
 	ok(has(out1, "교역수입 1,240") and has(out1, "교역로 여유 있음"), "외교: 교역 현황", out1:match("^[^\n]*"))
 	ok(out1:find("nor", 1, true) < out1:find("ksl", 1, true), "외교: 전쟁 목록은 국경 우선 정렬")
-	ok(has(out1, "관계 -85") and has(out1, "화친 가능"), "외교: 관계 날값 + 화친 가능 표시")
-	ok(has(out1, "군사동맹") and has(out1, "관계 +120"), "외교: 우호 목록")
+	ok(has(out1, "매우 비우호적(-85)") and has(out1, "화친 가능"), "외교: 관계 판정 + 화친 가능 표시",
+		out1:match("[^\n]*%-85[^\n]*"))
+	ok(has(out1, "군사동맹") and has(out1, "최상(+120)") == false and has(out1, "매우 우호적(+120)"),
+		"외교: 우호 목록(+120 = 매우 우호적)", out1:match("[^\n]*%+120[^\n]*"))
 	ok(has(out1, "• 화친:") and has(out1, "• 교역:") and has(out1, "• 불가침:") and has(out1, "• 연맹:"),
 		"외교: 성사되는 딜 5종 분류", out1:match("─ 지금 성사되는 것[^\n]*"))
 	ok(has(out1, "전쟁 전인데 우리를 적대"), "외교: CAI 적대 이웃 경보")
@@ -1568,8 +1572,15 @@ do
 	--    v63: 그 사실을 화면에서 강의하지도 않는다 — 동작(날값 표기)만 지킨다.
 	ok(not has(out1, "관계가 좋") and not has(out1, "관계가 나쁘") and not has(out1, "눈금"),
 		"외교: 미측정 눈금을 판정으로 옮기지도, 강의하지도 않음")
-	ok(TD.rel_tag({ standing = -5 }) == "관계 -5", "외교: 관계 꼬리표는 날값", TD.rel_tag({ standing = -5 }))
-	ok(TD.rel_tag({ attitude = 7 }) == "태도 +7", "외교: standing 없으면 attitude로 대체")
+	-- v64: 판정이 붙는다 — 짐작이 아니라 게임 자체의 눈금(db: diplomatic_relations_attitudes,
+	-- ±30/±70/±230 실측 추출)이다. 42턴 실측 standing -66 → 비우호적.
+	ok(TD.rel_tag({ standing = -5 }) == "중립(-5)", "외교: 관계 꼬리표 = 게임 눈금 판정 + 날값", TD.rel_tag({ standing = -5 }))
+	ok(TD.rel_tag({ attitude = 7 }) == "중립(+7)", "외교: standing 없으면 attitude로 대체")
+	ok(TD.rel_tag({ standing = -66 }) == "비우호적(-66)", "외교: -66 = 비우호적(42턴 실측값)")
+	ok(TD.rel_tag({ standing = 78 }) == "매우 우호적(+78)", "외교: +78 = 매우 우호적")
+	ok(TD.rel_tag({ standing = -230 }) == "적대적(-230)", "외교: -230 이하 = 적대적")
+	ok(TD.rel_tag({ attitude = -62.96, standing = -66 }) == "비우호적(-66)",
+		"외교: 판정은 attitude, 표시는 standing", TD.rel_tag({ attitude = -62.96, standing = -66 }))
 	ok(TD.rel_tag({}) == nil, "외교: 둘 다 없으면 표시하지 않음")
 
 	-- ③ 평화기: 할 일이 없으면 없다고 말한다(가만히 있어도 되는지가 질문이었다)
@@ -1586,9 +1597,11 @@ do
 	local out3 = with(f3, { border_enemies = { "ksl" }, border_others = {}, diplo = { ok = true, peace = {}, ally = {} } })
 	ok(has(out3, "전장에서 끝내야"), "외교: 전시에 외교 수단이 없으면 그렇게 말함", out3:match("─ 지금 할 일[^\n]*"))
 
-	-- ⑤ 기반 수집(S.diplo) 실패는 숨기지 않는다
+	-- ⑤ 기반 수집(S.diplo) 실패: "없습니다(거절당합니다)" 단정은 전수 확인 시에만 —
+	--    조회가 불완전하면 섹션을 아예 내지 않는다(틀린 확신도, 한계 고백도 없음).
 	local out4 = with(f3, { border_enemies = {}, border_others = {}, diplo = { ok = false } })
-	ok(has(out4, "화친·군사동맹 성사 여부는 이번에 읽지 못했습니다"), "외교: 화친·동맹 가부 조회 실패 명시")
+	ok(not has(out4, "거절당합니다") and not has(out4, "읽지 못했습니다"),
+		"외교: 조회 불완전 시 성사 단정도 고백도 없다", out4:match("[^\n]*성사[^\n]*"))
 
 	-- ⑥ CAI 호출 예산: 상대가 많아도 상한을 넘기지 않고, 넘겼으면 밝힌다
 	ACCEPT = {}
@@ -1598,9 +1611,10 @@ do
 	local f4 = mkfac{ at_war = false, n_allies = 4, wars = {}, allies = { "a1","a2","a3","a4" } }
 	local out5 = with(f4, { border_others = many, diplo = { ok = true, peace = {}, ally = {} } })
 	ok(CALLS.n <= TD.BUDGET, "외교: CAI 호출이 예산을 넘지 않음", CALLS.n .. "/" .. TD.BUDGET)
-	-- v63: '예산' 같은 내부 어휘 없이, 다 못 봤다는 사실만 사람 말로.
-	ok(has(out5, "일부만 확인했습니다") and not has(out5, "예산"),
-		"외교: 커버리지 한계를 사람 말로 밝힘")
+	-- v64: 커버리지 한계는 화면에 아예 내지 않는다(프루프로만). 단정("없습니다")도
+	-- 예산이 소진된 클릭에는 하지 않는다.
+	ok(not has(out5, "확인했습니다") and not has(out5, "예산") and not has(out5, "거절당합니다"),
+		"외교: 예산 소진 시 한계 고백도 성사 단정도 없다")
 
 	-- ⑦ 조사: 팩션 이름 받침에 따라 과/와·이/가가 갈린다(이름은 현지화 결과라
 	--    받침을 미리 알 수 없으므로 반드시 josa를 거쳐야 한다)
@@ -1843,7 +1857,8 @@ do
 			cth = { sub = "sc_cth", cul = "cul_cth", fac = "fac_cth" },
 			-- 뿌리가 없는 원형 트리. 카타이·젠취의 실제 DB가 이 모양이라
 			-- 부모-자식만 보면 '고를 수 있는 기술'이 0개로 나온다.
-			ring = { sub = "sc_ring", cul = "cul_ring", fac = nil },
+			-- 실제 생성기는 이런 세트에 odd=true를 박는다 — 픽스처도 같게.
+			ring = { sub = "sc_ring", cul = "cul_ring", fac = nil, odd = true },
 		},
 		list = {
 			ring = {
@@ -1937,19 +1952,45 @@ do
 
 	-- ⑥ 표에 없는 진영은 짐작하지 않는다
 	local out5 = with(mkfac{ researching = true, done = 0 }, { subculture = "sc_모드종족" })
-	-- v63: 미지원 진영은 장황한 사유 대신 한 줄. 사유(노드셋 미일치)는 프루프로.
-	ok(has(out5, "연구 추천은 지원하지 않습니다"),
-		"연구: 표에 없는 진영은 한 줄로 보류", out5:match("─ 이 진영[^\n]*"))
+	-- v64: 미지원 진영은 추천 섹션이 아예 없다 — "지원하지 않습니다"도 화면에 안 쓴다(지시).
+	ok(not has(out5, "지원하지") and not has(out5, "─ "),
+		"연구: 표에 없는 진영은 상태까지만, 조용히", out5)
 
-	-- ⑥-b 트리 모델이 이 진영과 안 맞을 때(카타이·젠취 같은 원형 트리):
-	--     게임은 연구할 게 있다는데 후보가 0개 → 틀린 확신 대신 남은 목록 + 잠김 주의
+	-- ⑥-b odd 세트(원형 트리) DB 폴백: 확신 없는 추천도, 헤지 달린 목록도 내지 않는다.
+	--     (실게임에선 CCO가 정답을 주므로 이 폴백 화면은 사실상 CCO 장애 시에만 나온다.)
 	local out5b = with(mkfac{ owned = {}, researching = true, any_left = true, done = 0 },
 		{ subculture = "sc_ring" })
-	ok(has(out5b, "아직 연구하지 않은 기술") and has(out5b, "잠겨 있을 수 있습니다"),
-		"연구: 트리 모델 불일치 시 확실한 것만 보여 준다", out5b:match("─ 아직[^\n]*"))
-	ok(has(out5b, "r1") and has(out5b, "r2"), "연구: 폴백에도 목록은 나온다")
-	ok(not has(out5b, "선행조건 충족") and not has(out5b, "원형으로 짜여"),
-		"연구: 폴백에서 '충족' 주장도, 트리 구조 강의도 하지 않는다")
+	ok(not has(out5b, "고를 수 있") and not has(out5b, "잠겨") and not has(out5b, "r1"),
+		"연구: odd 폴백은 추천 섹션 자체를 내지 않는다", out5b)
+
+	-- ⑥-c CCO 경로: 가용성을 게임에 직접 묻는다(v64 핵심).
+	--     odd 세트라도 IsAvailable=true인 것이 그대로 후보가 된다 — DB 선행조건 무시.
+	local saved_common2 = common
+	local CCO = {
+		["TechnologyList.Size"] = 3,
+		["TechnologyList.At(0).RecordContext.Key"] = "r3",
+		["TechnologyList.At(0).IsAvailable"] = true,
+		["TechnologyList.At(0).IsResearched"] = false,
+		["TechnologyList.At(1).RecordContext.Key"] = "r1",
+		["TechnologyList.At(1).IsAvailable"] = false,
+		["TechnologyList.At(1).IsResearched"] = true,
+		["TechnologyList.At(2).RecordContext.Key"] = "r2",
+		["TechnologyList.At(2).IsAvailable"] = false,
+		["TechnologyList.At(2).IsResearched"] = false,
+	}
+	common = { get_localised_string = function() return nil end,
+	           get_context_value = function(ctx, id, expr)
+	               if ctx == "CcoCampaignFaction" then return CCO[expr] end
+	           end }
+	local fc = mkfac{ owned = {}, researching = true, any_left = true, done = 1 }
+	fc.command_queue_index = function() return 7 end
+	local outc = with(fc, { subculture = "sc_ring" })
+	ok(has(outc, "지금 고를 수 있는 기술") and has(outc, "r3"),
+		"연구: CCO가 준 가용 기술이 후보로 나온다(odd 세트인데도)", outc:match("─ 지금[^\n]*"))
+	ok(not has(outc, "1. r2") and not has(outc, "1. r1"),
+		"연구: CCO 기준 잠김(r2)·완료(r1)는 후보에 안 나온다")
+	ok(not has(outc, "잠겨"), "연구: CCO 경로엔 헤지가 없다(정확한 답이므로)")
+	common = saved_common2
 
 	-- ⑦ 다 올렸으면 다 올렸다고
 	local out6 = with(mkfac{ owned = { t1=true,t2a=true,t2b=true,t3=true,t4=true },
@@ -2022,7 +2063,7 @@ end
 log("== 22. 화면 문구 위생 ==")
 do
 	local banned = {
-		"※",                  -- 각주 마커 자체를 화면에서 금지(커버리지는 괄호 한 줄로)
+		"※",                  -- 각주 마커 자체를 화면에서 금지
 		"판단을 보류", "판단 보류",
 		"읽은 범위 안",
 		"위장하지",
@@ -2032,6 +2073,13 @@ do
 		"실측하지",
 		"스캔 대상",
 		"슬롯 규칙", "기술표",   -- 개발자 어휘
+		-- v64(사용자 지시: 한계를 화면에 알리지 말 것): 커버리지·불능 고백류 전면 금지
+		"만 확인했습니다",       -- "(상대가 많아 일부만 확인했습니다)" 류
+		"곳 기준", "개 기준", "명 기준", "부대 중",   -- "(전체 N 중 M 기준)" 류
+		"수치 없음", "미상",
+		"지원하지 않습니다", "찾지 못했습니다",
+		"잠겨 있을 수",          -- 헤지 달린 추천(CCO가 정답을 주므로 불필요)
+		"셀 수 없습니다", "말할 수 없습니다", "알 수 없습니다",
 	}
 	local nbad = 0
 	for i, s in ipairs(SCREEN) do

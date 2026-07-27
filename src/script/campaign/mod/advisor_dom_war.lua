@@ -169,9 +169,8 @@ local function build(S, B)
 		end
 		if #fronts > 5 then L[#L + 1] = string.format("  … 외 %d전선", #fronts - 5) end
 	end
-	if far > 0 then
-		L[#L + 1] = string.format("  (국경 밖 전선 %d개는 수만 셌습니다)", far)
-	end
+	-- 국경 밖 전선은 머리줄의 "전선 N"에 이미 포함돼 있다. 상세를 안 읽었다는
+	-- 각주는 화면에 내지 않는다(지시) — 수치는 프루프의 전쟁프로브에 있다.
 
 	-- 방어
 	if #sieges > 0 or #threat > 0 then

@@ -296,14 +296,13 @@ local function build_construction(G, S, D)
 		end
 	end
 
-	local L = {}
 	local nfree = 0
 	for _, r in ipairs(withfree) do nfree = nfree + #r.free end
-	L[#L + 1] = string.format("─ 건설 (읽은 빈칸 %d · 업그레이드 가능 %d)", nfree, #ups)
-
+	-- 본문(body)을 먼저 만들고, 낼 것이 하나도 없으면 섹션 자체를 내지 않는다.
+	-- "지을 것이 없습니다"류의 빈 섹션은 한계 고백과 같은 인상을 준다(지시).
+	local body = {}
 	if #withfree == 0 and #ups == 0 then
-		L[#L + 1] = "  지금 지을 자리도, 올릴 건물도 없습니다."
-		return L, { nfree = nfree, nups = 0 }
+		return {}, { nfree = nfree, nups = 0 }
 	end
 
 	-- 지금 국고로 감당되는 게 하나도 없으면 그것부터 말한다. 못 짓는 걸 아는 채로
@@ -319,10 +318,6 @@ local function build_construction(G, S, D)
 		if not cheapest or u.cost < cheapest then cheapest = u.cost end
 	end
 	local broke = (purse and cheapest and purse < cheapest)
-	if broke then
-		L[#L + 1] = string.format("  ⚠ 국고 %s — 가장 싼 %s금짜리도 지금은 못 짓습니다. 아래는 돈이 모인 뒤 순서입니다.",
-			comma(purse), comma(cheapest))
-	end
 
 	for i = 1, math.min(#withfree, 3) do
 		local r = withfree[i]
@@ -342,18 +337,15 @@ local function build_construction(G, S, D)
 			return a.lv < b.lv
 		end)
 		if #pool == 0 then
-			-- 원인 구분(표에 없는 템플릿 vs 종족 제한)은 프루프로만 — 화면엔 결론만.
-			-- 예전 "(자원·수도 조건)"은 죽은 필드(v58)로 밝혀진 거짓 사유였고,
-			-- "(슬롯 규칙을 모름)"은 개발자 어휘라 사용자에게 무의미했다.
+			-- 후보를 못 만든 지역은 화면에서 조용히 건너뛴다(지시: 안 되는 것을 화면에
+			-- 알리지 말 것). 원인 구분(표에 없는 템플릿/종족 제한)은 프루프에만 남긴다.
 			local known = false
 			for _, tpl in ipairs(r.free) do
 				if CA_BLD.slot and CA_BLD.slot[tpl] then known = true; break end
 			end
-			say(string.format("[내정] %s 건설 후보 0 — %s (tpl: %s)", tostring(r.key),
+			say(string.format("[내정] %s 건설 후보 0 — %s (tpl: %s) — 화면 생략", tostring(r.key),
 				known and "종족에 허용된 체인 없음" or "표에 없는 슬롯템플릿",
 				table.concat(r.free, ",")))
-			L[#L + 1] = string.format("• %s 빈칸 %d — 지을 수 있는 건물이 없습니다.",
-				rdisp(r.key), #r.free)
 		else
 			local top = {}
 			for j = 1, math.min(#pool, 2) do
@@ -369,12 +361,12 @@ local function build_construction(G, S, D)
 			-- 포위 중이면 사실만 붙인다. '포위 중엔 건설이 막힌다'는 실측하지 못했으므로
 			-- 지을 수 있다/없다를 단정하지 않는다.
 			if sieged then headline = "🛡포위 중 · " .. headline end
-			L[#L + 1] = string.format("• %s 빈칸 %d · %s → %s%s",
+			body[#body + 1] = string.format("• %s 빈칸 %d · %s → %s%s",
 				rdisp(r.key), #r.free, headline, table.concat(top, " · "),
 				(#pool > 2) and string.format(" 외 %d", #pool - 2) or "")
 		end
 	end
-	if #withfree > 3 then L[#L + 1] = string.format("  … 빈칸 있는 곳 %d곳 더", #withfree - 3) end
+	if #withfree > 3 then body[#body + 1] = string.format("  … 빈칸 있는 곳 %d곳 더", #withfree - 3) end
 
 	if #ups > 0 then
 		table.sort(ups, function(a, b)
@@ -385,15 +377,27 @@ local function build_construction(G, S, D)
 		end)
 		for i = 1, math.min(#ups, 2) do
 			local u = ups[i]
-			L[#L + 1] = string.format("• 올리기: %s → %s @ %s",
+			body[#body + 1] = string.format("• 올리기: %s → %s @ %s",
 				CA_BLDQ.name(u.from) or u.from,
 				label_of(u.to, u.cost, u.turns, u.tag, u.want, purse), rdisp(u.region))
 		end
 		-- 빈칸 쪽은 "외 N"을 붙이면서 여긴 7개 중 2개만 보여주고 입을 닫고 있었다.
 		-- 잘라낸 것을 말하지 않으면 "이게 전부"로 읽힌다.
-		if #ups > 2 then L[#L + 1] = string.format("  … 올릴 수 있는 곳 %d군데 더", #ups - 2) end
+		if #ups > 2 then body[#body + 1] = string.format("  … 올릴 수 있는 곳 %d군데 더", #ups - 2) end
 	end
-	return L, { nfree = nfree, nups = #ups, broke = broke, cheapest = cheapest, purse = purse }
+
+	local summary = { nfree = nfree, nups = #ups, broke = broke, cheapest = cheapest, purse = purse }
+	if #body == 0 then
+		say("[내정] 건설 섹션 생략 — 표시할 후보 없음")
+		return {}, summary
+	end
+	local L = { string.format("─ 건설 (빈칸 %d · 올릴 곳 %d)", nfree, #ups) }
+	if broke then
+		L[#L + 1] = string.format("  ⚠ 국고 %s — 가장 싼 %s금짜리도 지금은 못 짓습니다. 아래는 돈이 모인 뒤 순서입니다.",
+			comma(purse), comma(cheapest))
+	end
+	for _, b in ipairs(body) do L[#L + 1] = b end
+	return L, summary
 end
 
 -- ── 정착지가 없는 진영(호드 등) — 내정 대신 실상을 말한다 ────────────
@@ -487,11 +491,12 @@ local function build(S, B)
 		if r.siege then p[#p + 1] = "🛡포위중" end
 		-- "(수도)"는 국가 수도로 오해된다 — 42턴 실측에서 속주가 둘이라 두 곳에 동시에
 		-- 붙었다. is_province_capital()이 뜻하는 그대로 적는다.
-		L[#L + 1] = string.format("• %s%s %s", rdisp(r.key), r.capital and "(속주수도)" or "",
-			(#p > 0) and table.concat(p, " · ") or "(수치 없음)")
+		-- 수치를 하나도 못 읽은 지역은 이름만 — "(수치 없음)" 같은 결손 표기를 하지 않는다.
+		L[#L + 1] = ("• " .. rdisp(r.key) .. (r.capital and "(속주수도)" or "")
+			.. ((#p > 0) and (" " .. table.concat(p, " · ")) or ""))
 	end
 	if #rs > 8 then L[#L + 1] = string.format("  … 외 %d곳", #rs - 8) end
-	if G.capped then L[#L + 1] = string.format("  (전체 %d곳 중 %d곳 기준)", G.n_regions, #G.regions) end
+	if G.capped then say(string.format("[내정] 지역 %d곳 중 %d곳만 스캔(상한)", G.n_regions, #G.regions)) end
 
 	-- 속주 진행도 — collect_strategic이 이미 계산한 값 재사용(중복 조회 안 함)
 	local provs = S and S.strat and S.strat.provinces
@@ -512,11 +517,13 @@ local function build(S, B)
 		end
 	end
 
-	-- 건설 (v54: 슬롯 템플릿 + 건물 DB로 '무엇을'까지 말한다)
+	-- 건설 (v54: 슬롯 템플릿 + 건물 DB로 '무엇을'까지 말한다. 빈 섹션은 아예 안 낸다)
 	local clines, cinfo = build_construction(G, S, D)
 	cinfo = cinfo or {}
-	L[#L + 1] = ""
-	for _, line in ipairs(clines) do L[#L + 1] = line end
+	if #clines > 0 then
+		L[#L + 1] = ""
+		for _, line in ipairs(clines) do L[#L + 1] = line end
+	end
 
 	-- 지금 손볼 곳(심각도 순, 최대 5)
 	local todo = {}
@@ -580,14 +587,14 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 손볼 곳"
 		for i, t in ipairs(todo) do L[#L + 1] = string.format("%d. %s", i, t) end
 	else
-		L[#L + 1] = "─ 지금 손볼 곳: 특별한 문제가 없습니다."
+		-- 다 못 훑었을 때(상한·예산)는 "문제 없음" 단정을 하지 않는다 — 조용히 생략.
+		-- 안심 문구는 전수를 봤을 때만 낼 수 있는 주장이다.
+		if not G.capped and G.budget > 0 then
+			L[#L + 1] = "─ 지금 손볼 곳: 특별한 문제가 없습니다."
+		end
 	end
 
-	if G.budget <= 0 then
-		say("[내정] 슬롯 상세 예산 소진 — 뒤쪽 지역 건설 후보 생략")
-		L[#L + 1] = ""
-		L[#L + 1] = "  (영토가 많아 앞쪽 지역의 건설만 확인했습니다)"
-	end
+	if G.budget <= 0 then say("[내정] 슬롯 상세 예산 소진 — 뒤쪽 지역 건설 후보 생략") end
 	return L
 end
 

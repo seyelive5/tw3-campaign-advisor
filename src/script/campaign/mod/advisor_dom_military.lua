@@ -219,7 +219,7 @@ local function build(S, B)
 	if regions > 0 then head[#head + 1] = string.format("군대밀도 %.2f", n / regions) end
 	L[#L + 1] = "【군사】 " .. table.concat(head, " · ")
 	if G.capped then
-		L[#L + 1] = string.format("　(전체 %d개 부대 중 %d개 기준)", G.n_forces, MAX_FORCE)
+		say(string.format("[군사] 부대 %d개 중 %d개만 스캔(상한)", G.n_forces, MAX_FORCE))
 	end
 
 	-- 군단 목록(전력 내림차순)
@@ -245,7 +245,7 @@ local function build(S, B)
 		if a.attrition then p[#p + 1] = "⚠소모" end
 		if a.merc then p[#p + 1] = "용병" end
 		L[#L + 1] = string.format("%d. %s (%d유닛) %s", i,
-			a.name or "이름 미상", a.units or 0,
+			a.name or "지휘관", a.units or 0,
 			(#p > 0) and table.concat(p, " · ") or "")
 		local c = comp_line(a)
 		if c then L[#L + 1] = c end
@@ -256,7 +256,7 @@ local function build(S, B)
 	local recs = {}
 	for _, a in ipairs(as) do
 		if #a.canrec > 0 and #recs < 4 then
-			recs[#recs + 1] = string.format("• %s: %s", a.name or "이름 미상", table.concat(a.canrec, ", "))
+			recs[#recs + 1] = string.format("• %s: %s", a.name or "지휘관", table.concat(a.canrec, ", "))
 		end
 	end
 	if #recs > 0 then

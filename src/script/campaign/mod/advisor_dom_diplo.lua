@@ -143,12 +143,29 @@ local function probe(G)
 		tostring(G.spent), G.budget_hit and "(예산 소진)" or ""))
 end
 
--- 관계 꼬리표: 눈금을 모르므로 날값만 붙인다(좋다/나쁘다 판정 없음).
+-- 관계 꼬리표. v64부터 판정이 붙는다 — 짐작이 아니라 게임 자체의 눈금이다.
+-- 출처: db.pack `diplomatic_relations_attitudes`(7행, pos==size 검증):
+--   best_friends 230 · very_friendly 70 · friendly 30 · neutral 0 ·
+--   unfriendly -30 · very_unfriendly -70 · hostile -230
+-- 게임 UI의 태도 아이콘이 쓰는 바로 그 구간이다. attitude(실수)가 그 대상이고,
+-- 없으면 standing(정수·같은 축, 42턴 실측 -62.96 vs -66)으로 같은 구간을 쓴다.
+local function att_label(v)
+	if type(v) ~= "number" then return nil end
+	if v >= 230 then return "최상"
+	elseif v >= 70 then return "매우 우호적"
+	elseif v >= 30 then return "우호적"
+	elseif v > -30 then return "중립"
+	elseif v > -70 then return "비우호적"
+	elseif v > -230 then return "매우 비우호적"
+	else return "적대적" end
+end
 local function rel_tag(r)
 	if not r then return nil end
-	if type(r.standing) == "number" then return "관계 " .. signed(r.standing) end
-	if type(r.attitude) == "number" then return "태도 " .. signed(r.attitude) end
-	return nil
+	local v = (type(r.attitude) == "number") and r.attitude
+	        or ((type(r.standing) == "number") and r.standing or nil)
+	if v == nil then return nil end
+	local n = (type(r.standing) == "number") and r.standing or math.floor(v + 0.5)
+	return string.format("%s(%s)", att_label(v), signed(n))
 end
 
 -- ── 본문 ─────────────────────────────────────────────────────────────
@@ -243,20 +260,20 @@ local function build(S, B)
 	if #G.deals.trade > 0 then rows[#rows + 1] = "• 교역: " .. names(G.deals.trade, 3) end
 	if #G.deals.nap > 0 then rows[#rows + 1] = "• 불가침: " .. names(G.deals.nap, 3) end
 	if #G.deals.confed > 0 then rows[#rows + 1] = "• 연맹: " .. names(G.deals.confed, 3) end
-	L[#L + 1] = ""
+	-- "없습니다(제안해도 거절당합니다)"는 전수를 확인했을 때만 할 수 있는 단정이다.
+	-- 조회가 일부 실패/미완이면 그 단정 대신 섹션을 아예 내지 않는다 — 틀린 확신도,
+	-- 한계 고백도 화면에 두지 않는다(지시). 사유는 프루프로.
+	local sure = (not dip_failed) and (not G.budget_hit)
 	if #rows > 0 then
+		L[#L + 1] = ""
 		L[#L + 1] = "─ 지금 성사되는 것 (AI 수락 예측)"
 		for _, r in ipairs(rows) do L[#L + 1] = r end
-	else
+	elseif sure then
+		L[#L + 1] = ""
 		L[#L + 1] = "─ 지금 성사되는 것: 없습니다(제안해도 거절당합니다)."
 	end
-	if dip_failed then
-		L[#L + 1] = "  ⚠ 화친·군사동맹 성사 여부는 이번에 읽지 못했습니다."
-	end
-	if G.budget_hit then
-		say(string.format("[외교] CAI 평가 예산 %d회 소진 — 일부 상대 미확인", BUDGET))
-		L[#L + 1] = "  (상대가 많아 일부만 확인했습니다)"
-	end
+	if dip_failed then say("[외교] 기반 화친·동맹 평가 실패 — 성사 섹션에서 해당 항목 제외") end
+	if G.budget_hit then say(string.format("[외교] CAI 평가 예산 %d회 소진 — 일부 상대 미확인", BUDGET)) end
 
 	-- 조심할 곳(v36 CAI 스탠스 — 전쟁 전인데 적대)
 	local hostile = S and S.strat and S.strat.hostile
