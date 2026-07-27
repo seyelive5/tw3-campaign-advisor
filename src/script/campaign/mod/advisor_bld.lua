@@ -30,6 +30,9 @@ local function my_ctx()
 	pcall(function() c = f:culture() end)
 	pcall(function() s = f:subculture() end)
 	pcall(function() n = f:name() end)
+	-- 실측: 불멸의 제국에서 "main_warhammer"를 돌려준다(wh3_main_combi가 아니다).
+	-- availability 표의 campaign 값은 ''(39행)와 'wh3_main_prologue'(5행)뿐이라
+	-- 결과적으로 프롤로그 전용 세트만 걸러진다 — 의도한 동작이다.
 	pcall(function() g = cm:get_campaign_name() end)
 	if not c and not s and not n then return nil end   -- 하나도 못 읽었으면 보류(캐시하지 않음)
 	me = { cul = c, sub = s, fac = n, camp = g }

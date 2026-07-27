@@ -1073,7 +1073,9 @@ do
 	end
 	local saved_getf = cm.get_local_faction
 	local saved_camp = cm.get_campaign_name
-	cm.get_campaign_name = function() return "wh3_main_combi" end
+	-- 인게임 실측값(42턴 불멸의 제국)은 "main_warhammer"다 — 내가 가정했던
+	-- "wh3_main_combi"가 아니었다. 픽스처도 실측값으로 맞춘다.
+	cm.get_campaign_name = function() return "main_warhammer" end
 	local function with(fac, S, B)
 		cm.get_local_faction = function() return fac end
 		if CA_BLDQ then CA_BLDQ.reset() end   -- 진영이 바뀌면 가용성 판정이 달라진다

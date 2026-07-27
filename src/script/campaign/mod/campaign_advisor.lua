@@ -2019,6 +2019,12 @@ local function panel_draw(text)
 		pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
 		proof(string.format("v41 본문 표시 col=%d h=%d tab=%s page=%d/%d",
 			LAY.COL, box_h, tostring(g_ui.tab), g_ui.page, g_ui.npages), true)
+		-- v54: 그린 본문을 그대로 프루프에 남긴다. 지금까지 파일에는 브리핑 산문만
+		-- 남아서, 탭이 실제로 뭐라고 조언했는지는 화면을 봐야만 알 수 있었다.
+		-- 조언이 '틀린' 결함(v53 국고 7골드에 "흑자 운영")은 전부 텍스트를 읽어서
+		-- 잡았다. 탭도 같은 방식으로 검증할 수 있어야 한다.
+		proof(string.format("[v54본문 %s %d/%d]\n%s",
+			tostring(g_ui.tab), g_ui.page, g_ui.npages, tostring(text)), true)
 	end)
 end
 
