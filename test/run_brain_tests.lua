@@ -1190,6 +1190,34 @@ do
 	ok(has(outU, "올릴 수 있는 곳 3군데 더"),
 		"내정: 업그레이드도 잘라낸 개수를 밝힌다", outU:match("  … 올릴[^\n]*"))
 
+	-- ①-j 군사 신호가 건설 우선순위에 들어온다(v58 리뷰 지적: gdp/po/grw 셋뿐이었다).
+	--   근거는 본체가 이미 모은 S.threats — 전쟁 탭과 같은 값이라 서로 어긋나지 않는다.
+	local m0 = TI.mil_of{ threats = { sieges = { "wh_main_reg_altdorf" },
+		threatened = { { region = "wh_main_reg_helmgart", defended = false } } } }
+	ok(m0.siege["wh_main_reg_altdorf"] and m0.threat["wh_main_reg_helmgart"] and m0.undef == 1,
+		"내정: 위협 신호 정리")
+	ok(TI.mil_of(nil).undef == 0 and TI.mil_of({}).undef == 0, "내정: 위협 정보 없으면 조용히 0")
+	-- 포위된 지역은 재정 위기보다 방어가 먼저다(그 지역 한정)
+	local rr = { key = "wh_main_reg_altdorf", po = 5, growth = 5 }
+	ok(select(1, TI.want_of(rr, { money_trouble = true }, m0)) == "def",
+		"내정: 포위 지역은 국고보다 방어 우선")
+	-- 위협받지 않는 지역은 종전 순서 그대로
+	local rs2 = { key = "wh_main_reg_other", po = 5, growth = 5 }
+	ok(select(1, TI.want_of(rs2, { money_trouble = true }, m0)) == "gdp",
+		"내정: 위협 없는 지역은 재정이 먼저")
+	-- 무방비 지역이 있으면 진영 전체가 병력 부족 → 모병
+	ok(select(1, TI.want_of(rs2, {}, m0)) == "rec",
+		"내정: 무방비 지역이 있으면 모병 계열", tostring(select(1, TI.want_of(rs2, {}, m0))))
+	ok(select(1, TI.want_of(rs2, {}, TI.mil_of(nil))) == "gdp",
+		"내정: 위협이 없으면 예전 기본값(수입)")
+	-- 화면에도 포위 사실이 붙는다
+	local regS = mkreg{ key = "wh_main_reg_altdorf", prov = "p", gdp = 100, po = 5, siege = true,
+		slots = { mkslot(true, false, TPL) } }
+	local outS = with(mkfac({ regS }, {}), { treasury = 99999,
+		threats = { sieges = { "wh_main_reg_altdorf" }, threatened = {} } }, {})
+	ok(has(outS, "🛡포위 중 · 방어 우선") or has(outS, "🛡포위 중 · 방어가 급하나"),
+		"내정: 포위 지역은 건설 줄에 포위 사실을 붙인다", outS:match("• Altdorf 빈칸[^\n]*"))
+
 	-- ② 포위가 치안보다 먼저 온다(심각도 순)
 	local rs = mkreg{ key = "wh_main_reg_altdorf", prov = "p", gdp = 100, po = -60, siege = true, slots = {} }
 	local out2 = with(mkfac({ rs }, {}), {}, {})

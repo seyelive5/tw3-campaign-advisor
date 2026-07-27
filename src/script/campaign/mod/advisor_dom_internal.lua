@@ -173,11 +173,38 @@ local function probe_bld(G)
 end
 
 -- ── 건설 조언 ─────────────────────────────────────────────────────────
---   무엇이 필요한 계열인가. 재정이 위태로우면 무조건 수입이 먼저고,
---   아니면 그 지역이 실제로 앓는 것(치안·성장)에 맞춘다.
-local function want_of(r, D)
+--   군사 신호를 지역 단위로 정리한다. 새 API를 부르지 않고 본체(gather_threats)가
+--   이미 모아 둔 것만 쓴다 — 전쟁 탭이 쓰는 것과 같은 근거라 서로 어긋나지 않는다.
+--     S.threats.sieges     = { 포위당한 내 지역 키, ... }
+--     S.threats.threatened = { {region, faction, on_land, defended}, ... }
+local function mil_of(S)
+	local m = { siege = {}, threat = {}, undef = 0 }
+	local T = S and S.threats
+	if type(T) ~= "table" then return m end
+	for _, k in ipairs(T.sieges or {}) do m.siege[k] = true end
+	for _, a in ipairs(T.threatened or {}) do
+		if a.region then
+			m.threat[a.region] = true
+			if not a.defended then m.undef = m.undef + 1 end
+		end
+	end
+	return m
+end
+
+--   무엇이 필요한 계열인가.
+--   순서의 근거: 지역이 지금 칼을 맞고 있으면 그 지역 한정으로 방어가 먼저다
+--   (돈이 없으면 위쪽 '국고' 경고가 따로 붙으니 이중으로 숨기지 않는다).
+--   그 다음이 재정 — 국고가 비면 아무것도 못 한다(v53 교훈). 이어서 치안,
+--   그리고 무방비 지역이 하나라도 있으면 진영 전체가 병력 부족이니 모병.
+--   ※ v58 리뷰 지적: 예전엔 gdp/po/grw 셋뿐이라 군사 탭이 "방어선이 얇습니다"라고
+--     외쳐도 내정 탭은 절대 병영·성벽을 권하지 않았다.
+local function want_of(r, D, mil)
+	mil = mil or {}
+	if r.siege or (mil.siege and mil.siege[r.key]) then return "def", "방어" end
+	if mil.threat and mil.threat[r.key] then return "def", "방어" end
 	if D and D.money_trouble then return "gdp", "국고" end
 	if r.po and r.po <= -15 then return "po", "치안" end
+	if (mil.undef or 0) > 0 then return "rec", "모병" end
 	if r.growth and r.growth <= 0 then return "grw", "성장" end
 	return "gdp", "수입"
 end
@@ -239,6 +266,7 @@ local function build_construction(G, S, D)
 		return { "─ 건설: 건물표를 읽지 못했습니다 — 판단을 보류합니다." }, {}
 	end
 	local purse = (S and tonumber(S.treasury)) or nil
+	local mil = mil_of(S)
 
 	-- ① 빈 슬롯 추천 (빈칸 많은 지역 우선, 최대 3곳)
 	local withfree = {}
@@ -259,7 +287,7 @@ local function build_construction(G, S, D)
 			if nv and nv.v ~= false and not CA_BLDQ.disabled(nx) then
 				ups[#ups + 1] = { region = r.key, from = lk, to = nx,
 				                  cost = nv.c or 0, turns = nv.t or 0,
-				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D)) }
+				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D, mil)) }
 			end
 		end
 	end
@@ -294,7 +322,8 @@ local function build_construction(G, S, D)
 
 	for i = 1, math.min(#withfree, 3) do
 		local r = withfree[i]
-		local want, why = want_of(r, D)
+		local want, why = want_of(r, D, mil)
+		local sieged = r.siege or (mil.siege and mil.siege[r.key])
 		-- 이 지역 빈 슬롯들의 후보를 합치고, 필요 계열 → 저렴한 순으로 고른다.
 		local pool, seen = {}, {}
 		for _, tpl in ipairs(r.free) do
@@ -332,6 +361,9 @@ local function build_construction(G, S, D)
 			for _, c in ipairs(pool) do if has_tag(c.tag, want) then matched = true; break end end
 			local headline = matched and string.format("%s 우선", why)
 			                          or string.format("%s가 급하나 여기엔 없어 싼 순", why)
+			-- 포위 중이면 사실만 붙인다. '포위 중엔 건설이 막힌다'는 실측하지 못했으므로
+			-- 지을 수 있다/없다를 단정하지 않는다.
+			if sieged then headline = "🛡포위 중 · " .. headline end
 			L[#L + 1] = string.format("• %s 빈칸 %d · %s → %s%s",
 				rdisp(r.key), #r.free, headline, table.concat(top, " · "),
 				(#pool > 2) and string.format(" 외 %d", #pool - 2) or "")
@@ -559,5 +591,5 @@ if ADVISOR_TEST_EXPORTS then
 	CA_TEST_INTERNAL = { build = build, gather = gather, comma = comma, signed = signed,
 	                     build_horde = build_horde, build_construction = build_construction,
 	                     want_of = want_of, has_tag = has_tag, label_of = label_of,
-	                     tag_rank = tag_rank, score_of = score_of }
+	                     tag_rank = tag_rank, score_of = score_of, mil_of = mil_of }
 end
