@@ -36,6 +36,10 @@ cm = {
 -- campaign_advisor보다 먼저 온다 → 도메인이 CA_U를 로드 시점에 잡으면 nil이 된다.
 -- 같은 순서로 실행해 그 실수를 하니스가 잡게 한다.
 ADVISOR_TEST_EXPORTS = true
+-- 건물 질의기가 데이터 파일보다 먼저 온다(파일명 순 'advisor_bld' < 'advisor_db_').
+-- 질의기가 로드 시점에 CA_BLD를 만지면 여기서 죽는다 — 그 실수를 잡는 배치다.
+dofile(ROOT .. "/src/script/campaign/mod/advisor_bld.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_db_building.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_agent.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
@@ -1020,7 +1024,18 @@ do
 
 	-- 게임 API 스텁(형태만 재현 — 실제 동작은 인게임 프루프로 확정)
 	local function mklist(t) return { num_items = function() return #t end, item_at = function(_, i) return t[i + 1] end } end
-	local function mkslot(active, has_b) return { active = function() return active end, has_building = function() return has_b end } end
+	-- v54: 슬롯이 template_key()와 building():name()도 답한다(인게임 실측 인터페이스와 동일)
+	local function mkslot(active, has_b, tpl, bkey)
+		return {
+			active = function() return active end,
+			has_building = function() return has_b end,
+			template_key = function() return tpl end,
+			building = function()
+				if not bkey then return nil end
+				return { is_null_interface = function() return false end, name = function() return bkey end }
+			end,
+		}
+	end
 	local function mkreg(o)
 		return {
 			name = function() return o.key end,
@@ -1041,6 +1056,10 @@ do
 		F = F or {}
 		return {
 			region_list = function() return mklist(regions) end,
+			-- v54 건물 질의기가 종족을 물어본다. 실제 인터페이스와 같은 이름으로 답한다.
+			culture    = function() return F.culture    or "wh_main_emp_empire" end,
+			subculture = function() return F.subculture or "wh_main_sc_emp_empire" end,
+			name       = function() return F.faction    or "wh_main_empire" end,
 			tax_level = function() return F.tax end,
 			num_complete_provinces = function() return F.complete end,
 			num_provinces = function() return F.provinces end,
@@ -1053,14 +1072,22 @@ do
 		}
 	end
 	local saved_getf = cm.get_local_faction
-	local function with(fac, S, B) cm.get_local_faction = function() return fac end; return table.concat(TI.build(S, B), "\n") end
+	local saved_camp = cm.get_campaign_name
+	cm.get_campaign_name = function() return "wh3_main_combi" end
+	local function with(fac, S, B)
+		cm.get_local_faction = function() return fac end
+		if CA_BLDQ then CA_BLDQ.reset() end   -- 진영이 바뀌면 가용성 판정이 달라진다
+		return table.concat(TI.build(S, B), "\n")
+	end
 
 	-- ① 정상 제국: 두 지역, 치안 위기 + 빈칸 + 개발포인트 + 속주 진행
+	local TPL = "wh2_main_human_major_secondary_gems"     -- 실제 DB 템플릿(엠파이어 후보 15개)
 	local reg1 = mkreg{ key = "wh_main_reg_altdorf", prov = "wh_main_prov_reikland", capital = true, gdp = 1240,
 		po = -60, growth = 8, nbuild = 5, dev = true,
-		slots = { mkslot(true, true), mkslot(true, false), mkslot(true, false), mkslot(false, false) } }
+		slots = { mkslot(true, true, TPL, "wh_main_emp_barracks_1"),
+		          mkslot(true, false, TPL), mkslot(true, false, TPL), mkslot(false, false) } }
 	local reg2 = mkreg{ key = "wh_main_reg_helmgart", prov = "wh_main_prov_reikland", gdp = 300, po = 4, growth = 0,
-		nbuild = 2, slots = { mkslot(true, true) } }
+		nbuild = 2, slots = { mkslot(true, true, TPL, "wh_main_emp_walls_1") } }
 	local S1 = { strat = { provinces = { { key = "wh_main_prov_reikland", owned = 3, total = 4,
 		miss_region = "wh_main_reg_ubersreik", miss_owner = "wh_main_grn_greenskins" } } } }
 	local out1 = with(mkfac({ reg1, reg2 }, { provinces = 1, complete = 0, tax = 3 }), S1, {})
@@ -1078,8 +1105,68 @@ do
 	ok(has(out1, "한 곳만 더 얻으면 완성"), "내정: 속주 완성 임박 조언")
 	ok(has(out1, "개발 포인트"), "내정: 개발 포인트 보유 안내")
 	ok(has(out1, "성장 +0") and has(out1, "정체"), "내정: 성장 정체 감지")
-	ok(has(out1, "게임 DB 추출이 필요합니다"), "내정: 건물 추천 불가를 정직하게 명시")
 	ok(not has(out1, "식량") and not has(out1, "노예"), "내정: 해당 없는 종족자원은 줄 자체를 안 만듦")
+
+	-- ①-b v54 건설 조언 — DB에서 실제 후보가 나온다
+	--   예전에는 "게임 DB 추출이 필요합니다"라고 물러섰다. 그 회피를 되살리지 않는다.
+	ok(not has(out1, "게임 DB 추출이 필요합니다"), "내정: 건물 추천 불가 회피문구가 사라졌다")
+	ok(has(out1, "─ 건설"), "내정: 건설 절이 나온다", out1:match("─ 건설[^\n]*"))
+	ok(has(out1, "Altdorf 빈칸 2"), "내정: 빈칸 있는 지역과 개수", out1:match("• Altdorf[^\n]*"))
+	-- 훈련장(barracks_1)의 다음 단계는 집결장(barracks_2, 1500금 2턴). common이 nil이라
+	-- 한글 로컬은 안 붙고 키 폴백이 뜬다 — 그 폴백 경로까지 여기서 검증한다.
+	ok(has(out1, "올리기:") and has(out1, "emp barracks 2") and has(out1, "1,500금 2턴"),
+		"내정: 업그레이드 후보 = 다음 단계·비용·턴", out1:match("• 올리기:[^\n]*"))
+	ok(has(out1, "@ Altdorf"), "내정: 업그레이드가 어느 지역인지 지목")
+	-- 치안 -60이면 그 지역은 치안 계열이 우선이어야 한다(재정 위기 아님).
+	ok(out1:match("• Altdorf 빈칸 2 · (%S+) 우선") == "치안",
+		"내정: 치안 붕괴 지역은 치안 계열 우선", tostring(out1:match("• Altdorf 빈칸 2 · (%S+) 우선")))
+	-- 후보가 실제 엠파이어 건물이어야 한다(다른 종족 것이 새어 들어오면 실패)
+	ok(not out1:match("건설[^\n]*\n[^\n]*dwf") and not out1:match("건설[^\n]*\n[^\n]*grn"),
+		"내정: 남의 종족 건물이 후보에 새어 들어오지 않음")
+
+	-- ①-c 재정 위기면 계열 우선순위가 수입으로 바뀐다
+	local outM = with(mkfac({ reg1, reg2 }, { provinces = 1 }), S1, { D = { money_trouble = true } })
+	ok(outM:match("• Altdorf 빈칸 2 · (%S+) 우선") == "국고",
+		"내정: 재정 위기면 치안보다 국고가 먼저", tostring(outM:match("• Altdorf 빈칸 2 · (%S+) 우선")))
+
+	-- ①-d 국고가 가장 싼 건물보다 적으면 그 사실을 말한다
+	local outP = with(mkfac({ reg1, reg2 }, { provinces = 1 }), { treasury = 50 }, {})
+	ok(has(outP, "못 짓습니다"), "내정: 국고가 최저가에도 못 미치면 명시", outP:match("※ 국고[^\n]*"))
+	local outR = with(mkfac({ reg1, reg2 }, { provinces = 1 }), { treasury = 999999 }, {})
+	ok(not has(outR, "못 짓습니다"), "내정: 국고가 넉넉하면 그 경고를 달지 않는다")
+
+	-- ①-e 슬롯 템플릿이 표에 없으면 조용히 넘어가지 말고 후보 없음을 말한다
+	local regX = mkreg{ key = "wh_main_reg_x", prov = "p", gdp = 10,
+		slots = { mkslot(true, false, "tpl_that_does_not_exist") } }
+	local outX = with(mkfac({ regX }, {}), {}, {})
+	ok(has(outX, "지을 수 있는 것이 없습니다"),
+		"내정: 모르는 슬롯 템플릿은 '없음'으로 정직하게", outX:match("• X[^\n]*"))
+
+	-- ①-f 태그 순위 — 태그는 '효과가 많은 계열 순'이라 앞일수록 그 건물의 본업이다.
+	--   치안이 1순위인 술집과 3순위인 야간보초를 같은 취급 하면 조언이 엉뚱해진다.
+	ok(TI.tag_rank("po,upk", "po") == 1 and TI.tag_rank("oth,cor,po", "po") == 3,
+		"내정: 태그 순위 계산")
+	ok(TI.tag_rank("oth,cor", "po") == nil, "내정: 없는 계열은 nil")
+	ok(TI.score_of(1500, "po,upk", "po", nil) > TI.score_of(1500, "oth,cor,po", "po", nil),
+		"내정: 같은 값이면 필요 계열이 앞선 쪽이 높은 점수")
+	ok(TI.score_of(500, "gdp", "gdp", 1000) > TI.score_of(500, "gdp", "gdp", 100),
+		"내정: 지금 감당되면 가산점")
+	-- 치안 위기 지역에서 술집(치안 1순위)이 야간보초(치안 3순위)보다 먼저 와야 한다
+	local regPO = mkreg{ key = "wh_main_reg_nuln", prov = "p", gdp = 900, po = -22,
+		slots = { mkslot(true, false, "wh3_main_special_nuln_secondary_iron") } }
+	local outPO = with(mkfac({ regPO }, {}), { treasury = 99999 }, {})
+	local line = outPO:match("• Nuln 빈칸[^\n]*") or ""   -- 지역 목록 줄이 아니라 건설 줄
+	local i_tav, i_fso = line:find("tavern", 1, true), line:find("foreign slot", 1, true)
+	ok(i_tav and (not i_fso or i_tav < i_fso), "내정: 치안 1순위 건물이 3순위보다 먼저", line)
+	ok(line:match("치안") ~= nil, "내정: 추천 이유(계열)가 줄에 보인다", line)
+
+	-- ①-g 감당 못 하는 항목은 항목마다 표시하고, 하나도 못 지으면 경고를 맨 앞에
+	local outB = with(mkfac({ reg1, reg2 }, {}), { treasury = 7 }, {})
+	ok(has(outB, "✗국고부족"), "내정: 감당 못 하는 후보는 항목에 표시")
+	local i_warn, i_first = outB:find("돈이 모인 뒤 순서", 1, true), outB:find("• Altdorf 빈칸", 1, true)
+	ok(i_warn and i_first and i_warn < i_first,
+		"내정: 전부 못 지으면 경고가 목록보다 먼저", tostring(i_warn) .. "/" .. tostring(i_first))
+	ok(not has(outR, "✗국고부족"), "내정: 국고가 넉넉하면 부족 표시를 달지 않는다")
 
 	-- ② 포위가 치안보다 먼저 온다(심각도 순)
 	local rs = mkreg{ key = "wh_main_reg_altdorf", prov = "p", gdp = 100, po = -60, siege = true, slots = {} }
