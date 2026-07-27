@@ -144,7 +144,7 @@ local function probe_bld(G)
 				shown = shown + 1
 				local all = CA_BLDQ.slot_chains(tpl)
 				local na = 0; if all then for _ in pairs(all) do na = na + 1 end end
-				local c = CA_BLDQ.candidates(tpl, { capital = r.capital })
+				local c = CA_BLDQ.candidates(tpl)
 				local top = {}
 				for i = 1, math.min(#(c or {}), 3) do
 					top[#top + 1] = string.format("%s(%d금)", CA_BLDQ.name(c[i].lv), c[i].cost)
@@ -279,7 +279,7 @@ local function build_construction(G, S, D)
 	local cheapest = nil
 	for _, r in ipairs(withfree) do
 		for _, tpl in ipairs(r.free) do
-			local c = CA_BLDQ.candidates(tpl, { capital = r.capital })
+			local c = CA_BLDQ.candidates(tpl)
 			if c and c[1] and (not cheapest or c[1].cost < cheapest) then cheapest = c[1].cost end
 		end
 	end
@@ -298,7 +298,7 @@ local function build_construction(G, S, D)
 		-- 이 지역 빈 슬롯들의 후보를 합치고, 필요 계열 → 저렴한 순으로 고른다.
 		local pool, seen = {}, {}
 		for _, tpl in ipairs(r.free) do
-			for _, c in ipairs(CA_BLDQ.candidates(tpl, { capital = r.capital }) or {}) do
+			for _, c in ipairs(CA_BLDQ.candidates(tpl) or {}) do
 				if not seen[c.lv] then seen[c.lv] = true; pool[#pool + 1] = c end
 			end
 		end
@@ -309,8 +309,17 @@ local function build_construction(G, S, D)
 			return a.lv < b.lv
 		end)
 		if #pool == 0 then
-			L[#L + 1] = string.format("• %s 빈칸 %d — 지을 수 있는 것이 없습니다(자원·수도 조건).",
-				rdisp(r.key), #r.free)
+			-- 사유를 지어내지 않는다. 원인은 둘 중 하나다: 슬롯 규칙 자체를 모르거나
+			-- (표에 없는 template_key), 규칙은 아는데 이 종족에 허용된 체인이 없거나.
+			-- ※ 예전엔 "(자원·수도 조건)"이라 적었는데, only_in_capital과
+			--   resource_requirement가 죽은 필드로 밝혀져 그 판정을 걷어냈다 — 거짓 사유였다.
+			local known = false
+			for _, tpl in ipairs(r.free) do
+				if CA_BLD.slot and CA_BLD.slot[tpl] then known = true; break end
+			end
+			L[#L + 1] = string.format("• %s 빈칸 %d — 지을 수 있는 것이 없습니다(%s).",
+				rdisp(r.key), #r.free,
+				known and "이 종족에 허용된 건물이 없음" or "슬롯 규칙을 모름")
 		else
 			local top = {}
 			for j = 1, math.min(#pool, 2) do

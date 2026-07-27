@@ -22,7 +22,9 @@
                                                    전부 nil이면 모두 허용('everyone')
     CA_BLD.ch[체인]         = { cat=계열, sc=슈퍼체인, dis=철거가능 }
     CA_BLD.lv[레벨키]       = { ch=체인, l=단계, c=건설비, t=턴, u=유지비,
-                                cap=수도전용, r=필요자원, f=식량, d=개발점수, v=UI표시 }
+                                f=식량, d=개발점수, v=UI표시(false면 화면에 안 뜸) }
+                              ※ only_in_capital·resource_requirement는 담지 않는다 —
+                                각각 5259행 전부 False, 0행인 죽은 필드다(실측).
     CA_BLD.up[레벨키]       = 다음단계레벨키
     CA_BLD.tag[레벨키]      = "gdp,grw"            효과 계열(최대 4개, 많은 순)
     CA_BLD.un[레벨키]       = { 유닛키, ... }      해금 유닛

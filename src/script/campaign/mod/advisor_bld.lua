@@ -235,10 +235,18 @@ function CA_BLDQ.disabled(level_key)
 end
 
 -- ── 이 슬롯에 지금 지을 수 있는 후보 ──────────────────────────────────
---   opts.capital = 이 지역이 속주 수도인가 (only_in_capital 건물 판정용)
 --   반환: { {lv=레벨키, ch=체인, cost=, turns=, tag=, cat=}, ... } 비용 오름차순
-function CA_BLDQ.candidates(tpl, opts)
-	opts = opts or {}
+--   ※ '수도 전용' 판정은 두지 않는다. only_in_capital이 5259행 전부 False라
+--     거를 대상이 하나도 없다(실측). 죽은 가드는 없는 가드보다 나쁘다 —
+--     읽는 사람이 그 경우가 처리됐다고 믿게 된다. resource_requirement(0행)도 같다.
+--     되살릴 조건: 그 분포가 바뀌면 생성기에서 필드를 다시 담고 여기에 판정을 넣을 것.
+--   결과는 템플릿 단위로 캐시한다. 한 지역의 빈 슬롯이 여러 개면 같은 템플릿을
+--   반복해서 묻고, build_construction은 '가장 싼 것'을 찾느라 한 번 더 묻는다.
+local cand_cache = {}
+function CA_BLDQ.candidates(tpl)
+	if type(tpl) ~= "string" then return nil end
+	local hit = cand_cache[tpl]
+	if hit then return hit end
 	local db = CA_BLD
 	local chains = CA_BLDQ.slot_chains(tpl)
 	if not db or not chains then return nil end
@@ -253,14 +261,12 @@ function CA_BLDQ.candidates(tpl, opts)
 			-- 아예 없는 81개는 나가쉬 부유 피라미드 같은 스크립트 전용이라 역시 제외.
 			local vr = lk and pick_variant(lk)
 			if v and v.v ~= false and vr and not vr.x then
-				if not (v.cap and opts.capital == false) then  -- 수도 전용
-					out[#out + 1] = {
-						lv = lk, ch = ch, cost = v.c or 0, turns = v.t or 0,
-						upkeep = v.u or 0, food = v.f, dev = v.d,
-						tag = db.tag and db.tag[lk] or nil,
-						cat = db.ch and db.ch[ch] and db.ch[ch].cat or nil,
-					}
-				end
+				out[#out + 1] = {
+					lv = lk, ch = ch, cost = v.c or 0, turns = v.t or 0,
+					upkeep = v.u or 0, food = v.f, dev = v.d,
+					tag = db.tag and db.tag[lk] or nil,
+					cat = db.ch and db.ch[ch] and db.ch[ch].cat or nil,
+				}
 			end
 		end
 	end
@@ -268,6 +274,7 @@ function CA_BLDQ.candidates(tpl, opts)
 		if a.cost ~= b.cost then return a.cost < b.cost end
 		return a.lv < b.lv                                  -- 동률이면 키 순(결정적)
 	end)
+	cand_cache[tpl] = out
 	return out
 end
 
@@ -288,10 +295,15 @@ function CA_BLDQ.tag_ko(tag, max)
 	return table.concat(out, "·")
 end
 
--- 캐시 비우기(세이브 갈아탈 때 호출 — 진영이 바뀌면 가용성 판정이 달라진다)
+-- 캐시 비우기(진영이 바뀌면 가용성·이름·후보가 전부 달라진다).
+-- ※ 진영에 의존하는 캐시를 하나라도 빠뜨리면 남의 종족 답이 남는다.
+--   name_cache는 pick_variant → my_ctx에 의존하고, cand_cache는 chain_ok에 의존한다.
+--   (인게임에서는 세이브를 불러올 때 Lua 상태가 새로 뜨므로 호출자가 없다.
+--    하니스가 픽스처마다 진영을 갈아 끼우며 쓴다.)
 function CA_BLDQ.reset()
 	me, entry_idx = nil, nil
 	set_cache, slot_cache, ok_cache = {}, {}, {}
+	name_cache, cand_cache = {}, {}
 end
 
 if ADVISOR_TEST_EXPORTS then

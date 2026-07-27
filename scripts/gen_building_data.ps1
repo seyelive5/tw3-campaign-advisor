@@ -242,7 +242,9 @@ $sb = New-Object System.Text.StringBuilder
                                                    전부 nil이면 모두 허용('everyone')
     CA_BLD.ch[체인]         = { cat=계열, sc=슈퍼체인, dis=철거가능 }
     CA_BLD.lv[레벨키]       = { ch=체인, l=단계, c=건설비, t=턴, u=유지비,
-                                cap=수도전용, r=필요자원, f=식량, d=개발점수, v=UI표시 }
+                                f=식량, d=개발점수, v=UI표시(false면 화면에 안 뜸) }
+                              ※ only_in_capital·resource_requirement는 담지 않는다 —
+                                각각 5259행 전부 False, 0행인 죽은 필드다(실측).
     CA_BLD.up[레벨키]       = 다음단계레벨키
     CA_BLD.tag[레벨키]      = "gdp,grw"            효과 계열(최대 4개, 많은 순)
     CA_BLD.un[레벨키]       = { 유닛키, ... }      해금 유닛
@@ -293,8 +295,11 @@ $nLv = 0
 foreach ($l in ($levels | Sort-Object level_name)) {
   $nLv++
   $x = ""
-  if ($l.only_in_capital -eq 'True')   { $x += ",cap=true" }
-  if ($l.resource_requirement)         { $x += (",r={0}" -f (Q $l.resource_requirement)) }
+  # ※ only_in_capital(5259행 전부 False)과 resource_requirement(0행)는 담지 않는다.
+  #   둘 다 이 게임 버전에서 죽은 필드다 — enabled/conditions와 같은 경우.
+  #   담아 두면 런타임에 '수도 전용을 거르는 가드'처럼 보이는 죽은 코드가 생긴다.
+  #   되살릴 조건: 이 분포가 바뀌면(True가 하나라도 나오면) 다시 넣고
+  #   CA_BLDQ.candidates에 수도 판정을 복구할 것.
   if ($l.food_cost -and [double]$l.food_cost -ne 0)                     { $x += (",f={0}" -f (N $l.food_cost)) }
   if ($l.development_point_cost -and [double]$l.development_point_cost -ne 0) { $x += (",d={0}" -f (N $l.development_point_cost)) }
   if ($l.visible_in_ui -ne 'True')     { $x += ",v=false" }
