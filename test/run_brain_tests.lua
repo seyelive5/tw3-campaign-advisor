@@ -40,6 +40,7 @@ ADVISOR_TEST_EXPORTS = true
 -- 질의기가 로드 시점에 CA_BLD를 만지면 여기서 죽는다 — 그 실수를 잡는 배치다.
 dofile(ROOT .. "/src/script/campaign/mod/advisor_bld.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_db_building.lua")
+dofile(ROOT .. "/src/script/campaign/mod/advisor_db_building_fx.lua")   -- v65: GDP 수익 계산에 사용
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_agent.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_diplo.lua")
 dofile(ROOT .. "/src/script/campaign/mod/advisor_dom_internal.lua")
@@ -224,6 +225,34 @@ do
 
 	T.LAY.MAXH = saved
 	ok(T.LAY.MAXH == saved, "쪽나눔: 테스트가 LAY를 원복한다")
+end
+
+-- ══ 0d. 건물 GDP 수익 (v65 — fx 표 실사용) ═══════════════════════════
+-- "훌륭한 알고리즘" 승격 1호: 계열 태그 매칭 → 실제 GDP 증가량 랭킹.
+-- 고정값은 생성 파일(advisor_db_building_fx.lua)의 실데이터다.
+log("== 0d. 건물 GDP 수익 ==")
+do
+	local gain = CA_BLDQ.gdp_gain
+	-- 실데이터: 직물공장 manufacture 250 · 보석 갱도 mining 200 · 병영 0(군사 건물)
+	ok(gain("wh_main_emp_industry_basic_1", 0) == 250, "GDP: 직물공장 정액 250",
+		tostring(gain("wh_main_emp_industry_basic_1", 0)))
+	ok(gain("wh2_main_emp_resource_gemstones_1", 1234) == 200, "GDP: 보석 갱도 정액 200")
+	ok(gain("wh_main_emp_barracks_1", 5000) == 0, "GDP: 군사 건물은 0")
+	-- mod_all %는 지역 GDP에 곱한다. 지역 GDP를 모르면 0 — 과대평가 금지.
+	CA_BLD_FX["__t_pct"] = { { e = "wh_main_effect_economy_gdp_mod_all", s = "region_to_region_own", v = 10 } }
+	ok(gain("__t_pct", 2000) == 200, "GDP: mod_all 10% × 지역GDP 2000 = 200")
+	ok(gain("__t_pct", 0) == 0, "GDP: 지역GDP 없으면 %는 0(과대평가 금지)")
+	-- 카테고리 %모드·force 스코프는 보수적으로 제외
+	CA_BLD_FX["__t_cat"] = { { e = "x_economy_gdp_mod_agriculture", s = "region_to_region_own", v = 50 } }
+	local g1, sk1 = gain("__t_cat", 9999)
+	ok(g1 == 0 and sk1 == 1, "GDP: 카테고리 %모드는 제외(건수만 셈)", g1 .. "/" .. sk1)
+	CA_BLD_FX["__t_force"] = { { e = "x_economy_gdp_farming", s = "region_to_force_own", v = 300 } }
+	ok(gain("__t_force", 0) == 0, "GDP: force 스코프 제외")
+	-- 업그레이드 증가분 = 다음 − 현재
+	ok(CA_BLDQ.gdp_delta("wh_main_emp_barracks_1", "wh_main_emp_industry_basic_1", 0) == 250,
+		"GDP: 업그레이드 증가분")
+	CA_BLD_FX["__t_pct"], CA_BLD_FX["__t_cat"], CA_BLD_FX["__t_force"] = nil, nil, nil
+	CA_BLDQ.reset()
 end
 
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
@@ -1244,6 +1273,17 @@ do
 	ok(not has(out1, "게임 DB 추출이 필요합니다"), "내정: 건물 추천 불가 회피문구가 사라졌다")
 	ok(has(out1, "─ 건설"), "내정: 건설 절이 나온다", out1:match("─ 건설[^\n]*"))
 	ok(has(out1, "Altdorf 빈칸 2"), "내정: 빈칸 있는 지역과 개수", out1:match("• Altdorf[^\n]*"))
+	-- v65: '수입 우선' 지역(치안·위협 정상)의 후보는 실제 GDP 증가량으로 세운다(fx 실값).
+	--   보석 갱도 200/500금(회수비 2.5) < 직물공장 250/1000금(4.0) → 갱도가 먼저.
+	--   ※ out1의 Altdorf는 치안 -60이라 want=치안 — GDP 랭킹은 평온 지역 픽스처로 본다.
+	local regG = mkreg{ key = "wh_main_reg_calm", prov = "p", gdp = 900, po = 8, growth = 9,
+		slots = { mkslot(true, false, TPL) } }
+	local outG = with(mkfac({ regG }, {}), { treasury = 99999 }, {})
+	ok(has(outG, "수입 우선") and has(outG, "GDP +200/턴") and has(outG, "GDP +250/턴"),
+		"내정: 후보에 GDP 증가량 표기", outG:match("• Calm 빈칸[^\n]*"))
+	-- 하니스는 common(로컬라이즈)이 없어 키 폴백 이름으로 나온다 — 그 기준으로 찾는다.
+	local iG, iI = outG:find("resource gemstones", 1, true), outG:find("industry basic", 1, true)
+	ok(iG and iI and iG < iI, "내정: 비용÷증가량 랭킹(갱도 2.5 < 공장 4.0)", outG:match("• Calm 빈칸[^\n]*"))
 	-- 훈련장(barracks_1)의 다음 단계는 집결장(barracks_2, 1500금 2턴). common이 nil이라
 	-- 한글 로컬은 안 붙고 키 폴백이 뜬다 — 그 폴백 경로까지 여기서 검증한다.
 	ok(has(out1, "올리기:") and has(out1, "emp barracks 2") and has(out1, "1,500금 2턴"),

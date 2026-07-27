@@ -235,12 +235,15 @@ local function score_of(cost, tag, want, purse)
 	return s
 end
 
--- 후보 한 줄 표시: 이름(비용/턴, 계열).
+-- 후보 한 줄 표시: 이름(비용/턴 · GDP 증가 · 계열).
 -- 왜 권하는지가 안 보이면 조언이 아니다 — 매칭된 계열을 반드시 앞에 세운다.
-local function label_of(lv, cost, turns, tag, want, purse)
+-- g(GDP/턴 증가, v65)는 fx 표에서 계산된 실값 — 있으면 계열 이름보다 이것이 근거다.
+local function label_of(lv, cost, turns, tag, want, purse, g)
 	local nm = CA_BLDQ.name(lv) or lv
 	local why = nil
-	if want and tag_rank(tag, want) then
+	if type(g) == "number" and g > 0 then
+		why = "GDP +" .. comma(g) .. "/턴"
+	elseif want and tag_rank(tag, want) then
 		local head = CA_BLDQ.tag_ko(want, 1)
 		local rest = CA_BLDQ.tag_ko((tag:gsub("^" .. want .. ",?", ""):gsub(",?" .. want .. "$", "")), 1)
 		why = head .. ((rest and rest ~= "") and ("·" .. rest) or "")
@@ -291,7 +294,9 @@ local function build_construction(G, S, D)
 			if nv and nv.v ~= false and not CA_BLDQ.disabled(nx) then
 				ups[#ups + 1] = { region = r.key, from = lk, to = nx,
 				                  cost = nv.c or 0, turns = nv.t or 0,
-				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D, mil)) }
+				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D, mil)),
+				                  -- v65: 이 업그레이드가 실제로 버는 GDP 증가분(fx 표 실값)
+				                  g = CA_BLDQ.gdp_delta(lk, nx, r.gdp) }
 			end
 		end
 	end
@@ -323,14 +328,31 @@ local function build_construction(G, S, D)
 		local r = withfree[i]
 		local want, why = want_of(r, D, mil)
 		local sieged = r.siege or (mil.siege and mil.siege[r.key])
-		-- 이 지역 빈 슬롯들의 후보를 합치고, 필요 계열 → 저렴한 순으로 고른다.
+		-- 이 지역 빈 슬롯들의 후보를 합친다. candidates()의 캐시 항목을 그대로 쓰지 않고
+		-- 얕은 복사를 뜨는 이유: g(GDP 증가)는 지역 GDP에 따라 달라지는 값이라
+		-- 캐시에 심으면 다른 지역에 남의 값이 남는다.
 		local pool, seen = {}, {}
 		for _, tpl in ipairs(r.free) do
 			for _, c in ipairs(CA_BLDQ.candidates(tpl) or {}) do
-				if not seen[c.lv] then seen[c.lv] = true; pool[#pool + 1] = c end
+				if not seen[c.lv] then
+					seen[c.lv] = true
+					pool[#pool + 1] = { lv = c.lv, cost = c.cost, turns = c.turns, tag = c.tag,
+					                    g = CA_BLDQ.gdp_gain(c.lv, r.gdp) }
+				end
 			end
 		end
+		-- 정렬(v65): 수입이 급하면 '얼마나 버는가'가 계열 태그보다 먼저다.
+		--   버는 후보끼리는 회수비(비용÷GDP증가) 오름차순 — 골드↔GDP 환산은 안 하지만
+		--   후보 간 비교에서는 단위가 약분되므로 이 정렬은 실측 위반이 아니다.
 		table.sort(pool, function(a, b)
+			if want == "gdp" then
+				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
+				if ga ~= gb then return ga end
+				if ga and gb then
+					local pa, pb = a.cost / a.g, b.cost / b.g
+					if pa ~= pb then return pa < pb end
+				end
+			end
 			local sa, sb = score_of(a.cost, a.tag, want, purse), score_of(b.cost, b.tag, want, purse)
 			if sa ~= sb then return sa > sb end
 			if a.cost ~= b.cost then return a.cost < b.cost end
@@ -349,7 +371,7 @@ local function build_construction(G, S, D)
 		else
 			local top = {}
 			for j = 1, math.min(#pool, 2) do
-				top[#top + 1] = label_of(pool[j].lv, pool[j].cost, pool[j].turns, pool[j].tag, want, purse)
+				top[#top + 1] = label_of(pool[j].lv, pool[j].cost, pool[j].turns, pool[j].tag, want, purse, pool[j].g)
 			end
 			-- 필요 계열이 후보에 아예 없으면 "국고 우선"이라 써 놓고 국고와 무관한
 			-- 목록을 내밀게 된다(42턴 실측: 나글파리 평원 후보가 전부 '기타'였다).
@@ -370,6 +392,15 @@ local function build_construction(G, S, D)
 
 	if #ups > 0 then
 		table.sort(ups, function(a, b)
+			-- v65: 수입이 급한 지역의 업그레이드는 GDP 증가/비용으로 비교(빈칸과 동일 규칙)
+			if a.want == "gdp" and b.want == "gdp" then
+				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
+				if ga ~= gb then return ga end
+				if ga and gb then
+					local pa, pb = a.cost / a.g, b.cost / b.g
+					if pa ~= pb then return pa < pb end
+				end
+			end
 			local sa, sb = score_of(a.cost, a.tag, a.want, purse), score_of(b.cost, b.tag, b.want, purse)
 			if sa ~= sb then return sa > sb end
 			if a.cost ~= b.cost then return a.cost < b.cost end
@@ -379,7 +410,7 @@ local function build_construction(G, S, D)
 			local u = ups[i]
 			body[#body + 1] = string.format("• 올리기: %s → %s @ %s",
 				CA_BLDQ.name(u.from) or u.from,
-				label_of(u.to, u.cost, u.turns, u.tag, u.want, purse), rdisp(u.region))
+				label_of(u.to, u.cost, u.turns, u.tag, u.want, purse, u.g), rdisp(u.region))
 		end
 		-- 빈칸 쪽은 "외 N"을 붙이면서 여긴 7개 중 2개만 보여주고 입을 닫고 있었다.
 		-- 잘라낸 것을 말하지 않으면 "이게 전부"로 읽힌다.

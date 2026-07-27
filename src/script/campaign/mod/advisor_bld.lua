@@ -278,6 +278,59 @@ function CA_BLDQ.candidates(tpl)
 	return out
 end
 
+-- ── GDP 수익 추정 (v65 — fx 표 실사용) ────────────────────────────────
+--   "수입 우선"일 때 후보를 계열 태그가 아니라 '얼마나 버는가'로 세우기 위한 값.
+--   데이터: advisor_db_building_fx.lua(building_effects_junction 21,613행 — db 실측).
+--   계산 규칙(보수적 — 실측 안 된 환산은 하지 않는다):
+--     · 키에 economy_gdp 포함 + _mod 없음 → 정액 GDP/턴 (예: 직물공장 manufacture 250)
+--     · economy_gdp_mod_all              → 지역 GDP의 v% (게임 표기와 같은 축)
+--     · 그 밖의 _mod(카테고리 %)         → 제외 — 그 카테고리의 기반값을 모르면 과대평가다
+--     · raid/sack/razing income 류        → economy_gdp 필터에 걸리지 않아 자동 제외
+--     · scope는 '_own' 계열만, force 대상 제외
+--   반환은 GDP/턴이다. 골드 환산(세율 반영)은 실측 전이라 하지 않는다 —
+--   정렬(비용÷증가량)은 후보끼리의 비교라 단위가 약분돼 그대로 유효하다.
+local fxsum_cache = {}
+local function fx_gdp(level_key)
+	local hit = fxsum_cache[level_key]
+	if hit then return hit end
+	local out = { flat = 0, pct = 0, skipped = 0 }
+	local FX = CA_BLD_FX
+	for _, r in ipairs((FX and FX[level_key]) or {}) do
+		local e, s = r.e or "", r.s or ""
+		if e:find("economy_gdp", 1, true)
+			and (s == "this_building" or s:find("own", 1, true))
+			and not s:find("force", 1, true) then
+			if not e:find("_mod", 1, true) then
+				out.flat = out.flat + (tonumber(r.v) or 0)
+			elseif e:find("gdp_mod_all", 1, true) then
+				out.pct = out.pct + (tonumber(r.v) or 0)
+			else
+				out.skipped = out.skipped + 1
+			end
+		end
+	end
+	fxsum_cache[level_key] = out
+	return out
+end
+
+-- 이 건물이 서면 늘어나는 GDP/턴. 둘째 반환값 = 보수적으로 제외한 효과 수(프루프용).
+function CA_BLDQ.gdp_gain(level_key, region_gdp)
+	if type(level_key) ~= "string" then return 0, 0 end
+	local x = fx_gdp(level_key)
+	local g = x.flat
+	if x.pct ~= 0 and type(region_gdp) == "number" and region_gdp > 0 then
+		g = g + region_gdp * x.pct / 100
+	end
+	return math.floor(g + 0.5), x.skipped
+end
+
+-- 업그레이드의 GDP 증가분(다음 단계 − 현 단계).
+function CA_BLDQ.gdp_delta(from_key, to_key, region_gdp)
+	local a = CA_BLDQ.gdp_gain(to_key, region_gdp)
+	local b = CA_BLDQ.gdp_gain(from_key, region_gdp)
+	return a - b
+end
+
 -- ── 표시용 ────────────────────────────────────────────────────────────
 local TAG_KO = {
 	gdp = "수입", po = "치안", grw = "성장", cor = "타락", res = "연구",
@@ -303,7 +356,7 @@ end
 function CA_BLDQ.reset()
 	me, entry_idx = nil, nil
 	set_cache, slot_cache, ok_cache = {}, {}, {}
-	name_cache, cand_cache = {}, {}
+	name_cache, cand_cache, fxsum_cache = {}, {}, {}
 end
 
 if ADVISOR_TEST_EXPORTS then
