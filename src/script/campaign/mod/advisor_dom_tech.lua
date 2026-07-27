@@ -73,30 +73,63 @@ end
 --   추측이 아니라 게임의 답이 된다. DB는 계열(c/b/x)·티어 장식에만 쓴다.
 --   실패하면(패치로 CCO 변경 등) 조용히 DB 모델로 폴백 — 화면은 티 안 낸다.
 local CCO_CAP = 400          -- 기술 목록 순회 상한(팩션당 보통 50~150개)
+
+-- 28일 03:04 세션 실측: 첫 시도(cqi + "TechnologyList.Size")가 nil → DB 폴백으로 흘렀다.
+-- 바닐라는 두 가지 스타일을 혼용한다 —
+--   lib_campaign_manager:17280  get_context_value("CcoCampaignFaction", cqi, "IsCampaignFeatureAvailable(...)")
+--   campaign_tours:914          Call("ActiveCaravanList.Size")            (괄호 없음)
+--   scripted_tour_helper:292    "CapturePointList().Size"                 (괄호 있음)
+--   wh3_campaign_great_bastion:660  cco("CcoCampaignFaction", 팩션키)     (id가 키 문자열)
+-- 어느 조합이 CcoCampaignFaction.TechnologyList에 맞는지 문서로는 확정이 안 되므로
+-- (id 2종 × 표현식 3종)을 순서대로 시도하고, 결과를 프루프에 남긴다.
+local function cco_get(oid, expr)
+	local v = nil
+	pcall(function() v = common.get_context_value("CcoCampaignFaction", oid, expr) end)
+	return v
+end
+
 local function gather_cco(f, G, byk)
-	local cqi = nil
+	local cqi, fkey = nil, nil
 	pcall(function() cqi = f:command_queue_index() end)
-	if type(cqi) ~= "number" then return false end
-	local n = nil
-	pcall(function() n = common.get_context_value("CcoCampaignFaction", cqi, "TechnologyList.Size") end)
-	if type(n) ~= "number" or n <= 0 then return false end
-	G.cco_n, G.cco_key_src = n, nil
+	pcall(function() fkey = f:name() end)
+
+	local OIDS = {}
+	if type(cqi) == "number" then OIDS[#OIDS + 1] = cqi end
+	if type(fkey) == "string" then OIDS[#OIDS + 1] = fkey end
+	local PATS = { "TechnologyList", "TechnologyList()", "TechnologyManagerContext.TechnologyList" }
+
+	local oid, pat, n = nil, nil, nil
+	local tried = {}
+	for _, o in ipairs(OIDS) do
+		for _, p in ipairs(PATS) do
+			local v = cco_get(o, p .. ".Size")
+			tried[#tried + 1] = string.format("%s|%s=%s",
+				(type(o) == "number") and "cqi" or "키", p, tostring(v))
+			if type(v) == "number" and v > 0 then oid, pat, n = o, p, v; break end
+		end
+		if oid then break end
+	end
+	G.cco_try = table.concat(tried, " · ")
+	if not oid then return false end
+	G.cco_n, G.cco_pat = n, pat
+
+	-- 키 접근자도 첫 항목에서 한 번만 변형 시도 후 고정(항목마다 3배 호출 방지).
+	local KEYPATS = { ".RecordContext.Key", ".RecordContext().Key", ".NodeKey" }
+	local keypat = nil
+	for _, kp in ipairs(KEYPATS) do
+		local k0 = cco_get(oid, string.format("%s.At(0)%s", pat, kp))
+		if type(k0) == "string" and k0 ~= "" then keypat = kp; break end
+	end
+	if not keypat then G.cco_key_src = "실패"; return false end
+	G.cco_key_src = keypat
+
 	local got_any = false
 	for i = 0, math.min(n, CCO_CAP) - 1 do
-		local base = string.format("TechnologyList.At(%d)", i)
-		local key = nil
-		pcall(function() key = common.get_context_value("CcoCampaignFaction", cqi, base .. ".RecordContext.Key") end)
+		local base = string.format("%s.At(%d)", pat, i)
+		local key = cco_get(oid, base .. keypat)
 		if type(key) == "string" and key ~= "" then
-			G.cco_key_src = G.cco_key_src or "RecordContext.Key"
-		else
-			-- 폴백: 문서상 NodeKey도 있다(노드 키 — 이름 해석엔 못 쓰지만 존재 확인용)
-			pcall(function() key = common.get_context_value("CcoCampaignFaction", cqi, base .. ".NodeKey") end)
-			if type(key) == "string" and key ~= "" then G.cco_key_src = G.cco_key_src or "NodeKey" end
-		end
-		if type(key) == "string" and key ~= "" then
-			local avail, done = nil, nil
-			pcall(function() avail = common.get_context_value("CcoCampaignFaction", cqi, base .. ".IsAvailable") end)
-			pcall(function() done = common.get_context_value("CcoCampaignFaction", cqi, base .. ".IsResearched") end)
+			local avail = cco_get(oid, base .. ".IsAvailable")
+			local done  = cco_get(oid, base .. ".IsResearched")
 			if avail == true or done == true then got_any = true end
 			local d = byk and byk[key] or nil
 			if done == true then
@@ -220,8 +253,11 @@ local function build(S, B)
 		tostring(#G.avail), tostring(#G.notdone), tostring(G.spent),
 		G.budget_hit and "(예산 소진)" or ""))
 	if G.src == "cco" then
-		say(string.format("[v64CCO] 목록=%s 키출처=%s%s — 가용성을 게임에 직접 물었다(추측 아님)",
-			tostring(G.cco_n), tostring(G.cco_key_src), G.cco_capped and " (상한 도달)" or ""))
+		say(string.format("[v64CCO] 목록=%s 패턴=%s 키출처=%s%s — 가용성을 게임에 직접 물었다(추측 아님)",
+			tostring(G.cco_n), tostring(G.cco_pat), tostring(G.cco_key_src),
+			G.cco_capped and " (상한 도달)" or ""))
+	elseif G.cco_try then
+		say("[v66CCO시도] 전부 실패 — " .. G.cco_try)
 	end
 	if G.avail and #G.avail > 0 then
 		local ks = {}

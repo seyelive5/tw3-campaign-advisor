@@ -1966,22 +1966,42 @@ local LAY = { X = 24, Y = 176, COL = 520, PAD = 18, MAXH = 720, TABH = 30, TABW 
 local g_ui = { open = false, tab = nil, page = 1, npages = 1, built = false, tmpl = nil, tabs = {},
                sink = nil, sel = nil, state0 = nil, boxh = 0 }
 
+-- v66: 패널 유실 대응(28일 03:04 세션 실측). 첫 클릭에서 정상 생성·표시된 패널이
+-- 두 번째 렌더부터 find로 잡히지 않았고(게임이 자막 컴포넌트를 수거한 것으로 보임),
+-- 같은 id로의 CreateComponent가 그 뒤 전부 nil을 돌려줬다(잔존 id 충돌 추정) —
+-- 그래서 화면 전체가 "안 되는" 것으로 보였다. id에 세대 번호를 붙여 재생성한다.
+local g_panel_gen = 0
+local function panel_name()
+	return (g_panel_gen == 0) and PANEL_ID or (PANEL_ID .. "_g" .. g_panel_gen)
+end
+
 local function get_panel()
 	local panel = nil
 	pcall(function()
 		local root = core:get_ui_root()
-		panel = find_uicomponent(root, PANEL_ID)
+		panel = find_uicomponent(root, panel_name())
 		if panel then return end
-		local addr = root:CreateComponent(PANEL_ID, "UI/Common UI/scripted_subtitles.twui.xml")
-		if addr then panel = UIComponent(addr); proof("v11 패널 생성(scripted_subtitles)", true)
-		else proof("v11 !!! 패널 생성 실패", true) end
+		for _ = 1, 4 do
+			local nm = panel_name()
+			local addr = root:CreateComponent(nm, "UI/Common UI/scripted_subtitles.twui.xml")
+			if addr then
+				panel = UIComponent(addr)
+				proof("v66 패널 생성 " .. nm, true)
+				-- topmost 등록은 생성 시 1회만. (그리기마다 반복할 이유가 없고,
+				-- 유실-재생성 루프에서 매번 건드리는 변수를 줄인다.)
+				pcall(function() panel:RegisterTopMost() end)
+				return
+			end
+			proof("v66 !!! 패널 생성 실패 " .. nm .. " — 다음 세대로 재시도", true)
+			g_panel_gen = g_panel_gen + 1
+		end
 	end)
 	return panel
 end
 
 local function panel_text()
 	local t = nil
-	pcall(function() t = find_uicomponent(core:get_ui_root(), PANEL_ID, "text_child") end)
+	pcall(function() t = find_uicomponent(core:get_ui_root(), panel_name(), "text_child") end)
 	return t
 end
 
@@ -2063,7 +2083,7 @@ local function panel_draw(text)
 		local root = core:get_ui_root()
 		local textc = panel_text()
 		if not textc then proof("v41 !!! text_child 못찾음", true); return end
-		local bg = find_uicomponent(root, PANEL_ID, "frame_black")   -- 숨겨진 검은 배너 배경
+		local bg = find_uicomponent(root, panel_name(), "frame_black")   -- 숨겨진 검은 배너 배경
 		pcall(function() textc:SetTextHAlign("left") end)
 		pcall(function() textc:SetOpacity(255) end)
 		local box_h = measure(textc, text) or 600    -- 측정 실패 폴백(넉넉히 — 잘리는 것보다 큰 게 낫다)
@@ -2081,8 +2101,7 @@ local function panel_draw(text)
 		end
 		pcall(function() textc:MoveTo(LAY.X + LAY.PAD, LAY.Y + LAY.PAD) end)
 		pcall(function() textc:SetVisible(true) end)
-		-- z-순서: 패널 전체를 topmost(내부는 frame_black<text_child 순 → 텍스트가 배경 위).
-		pcall(function() local p = find_uicomponent(root, PANEL_ID); if p then p:RegisterTopMost() end end)
+		-- z-순서(topmost)는 get_panel의 생성 시점에 1회 등록한다(v66).
 		proof(string.format("v41 본문 표시 col=%d h=%d tab=%s page=%d/%d",
 			LAY.COL, box_h, tostring(g_ui.tab), g_ui.page, g_ui.npages), true)
 		-- v54: 그린 본문을 그대로 프루프에 남긴다. 지금까지 파일에는 브리핑 산문만
@@ -2097,8 +2116,8 @@ end
 local function panel_hide()
 	pcall(function()
 		local root = core:get_ui_root()
-		local textc = find_uicomponent(root, PANEL_ID, "text_child")
-		local bg = find_uicomponent(root, PANEL_ID, "frame_black")
+		local textc = find_uicomponent(root, panel_name(), "text_child")
+		local bg = find_uicomponent(root, panel_name(), "frame_black")
 		if textc then pcall(function() textc:SetVisible(false) end) end
 		if bg then pcall(function() bg:SetVisible(false) end) end
 	end)
@@ -2397,6 +2416,27 @@ local function gather_resource(prof)
 end
 
 -- ── v36 실측 프로브(DEBUG 전용) — CAI 스탠스·예산 API ────────────────
+-- v66 좌표 프로브(J2 선행) — 실거리 모델에 쓸 좌표계의 단위·규모 실측.
+--   logical_position은 tw_autogen 실존(설정: 사냥 1호에서 확인). 수도와 군주의
+--   좌표, 그 차이의 제곱합을 찍는다. 다음 실행 프루프가 단위를 알려 준다.
+local function probe_geo_v66(f)
+	pcall(function()
+		local hx, hy, cx, cy
+		pcall(function()
+			local hr = f:home_region()
+			if hr and not hr:is_null_interface() then hx, hy = hr:settlement():logical_position() end
+		end)
+		pcall(function()
+			local ch = f:faction_leader()
+			if ch and not ch:is_null_interface() then cx, cy = ch:logical_position() end
+		end)
+		local d2 = nil
+		if hx and cx then d2 = (hx - cx) * (hx - cx) + (hy - cy) * (hy - cy) end
+		proof(string.format("[v66좌표] 수도=(%s,%s) 군주=(%s,%s) d2=%s",
+			tostring(hx), tostring(hy), tostring(cx), tostring(cy), tostring(d2)), true)
+	end)
+end
+
 -- tw_autogen 실존 확인됨(CAMPAIGN_AI_SCRIPT_INTERFACE)이나 반환 형식·인자 타입·
 -- 플레이어 대상 작동 여부 미상 → 인게임 1클릭으로 전부 기록. 확정되면 조언에 채택.
 local function probe_cai_v36(S)
@@ -2502,6 +2542,7 @@ local function ensure_base()
 		S.strat = collect_strategic(S)                     -- 전략 2.0: 속주·국력·군단·엔드게임·승리조건
 		if S.health and not (S.strat and S.strat.ok) then S.health[#S.health + 1] = "전략" end   -- v35
 		probe_cai_v36(S)                                   -- v36: CAI 스탠스·예산 API 실측(DEBUG 전용)
+		pcall(function() probe_geo_v66(cm:get_local_faction(true)) end)   -- v66: 좌표 단위 실측(J2 선행)
 		local D, cand = analyze(S, prof)
 		-- 전략 2.0: 다턴 계획 — 로드 → 완료 감지·기준선 승계 갱신 → 저장
 		do
