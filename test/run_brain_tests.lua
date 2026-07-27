@@ -192,6 +192,31 @@ do
 	local tp = P(mktext(20), tech_like)
 	ok(#tp == 2, "쪽나눔: 1080p(MAXH 565)에서 연구 탭 분량은 2쪽", "쪽 " .. #tp)
 
+	-- 고아 줄 방지(v62). MAXH 500 인게임 실측에서 기타 탭은 "─ 지금 할 일"만 1쪽 끝에
+	-- 남았고 연구 탭은 "4. 피에 젖은 예복"과 그 설명 줄이 쪽 경계로 갈렸다.
+	T.LAY.MAXH = 100                      -- 5줄/쪽
+	local doc = { "머리줄", "본문1", "본문2", "본문3", "─ 지금 할 일", "1. 첫 항목", "2. 둘째 항목" }
+	local pg = P(mktext(20), doc)
+	local last1 = T.split_lines(pg[1])
+	ok(last1[#last1] ~= "─ 지금 할 일", "쪽나눔: 섹션 헤더만 쪽 끝에 남기지 않는다", last1[#last1])
+	ok(T.split_lines(pg[2])[1] == "─ 지금 할 일", "쪽나눔: 헤더를 내용과 함께 넘긴다")
+
+	local doc2 = { "머리줄", "본문1", "본문2", "본문3", "4. 피에 젖은 예복", "   티어 1 · 지도 효과" }
+	local pg2 = P(mktext(20), doc2)
+	local l1 = T.split_lines(pg2[1])
+	ok(l1[#l1] ~= "4. 피에 젖은 예복", "쪽나눔: 항목 제목과 설명을 갈라놓지 않는다", l1[#l1])
+
+	-- 고아 규칙이 줄을 삼키면 안 된다
+	local back2 = {}
+	for _, p in ipairs(pg) do for _, ln in ipairs(T.split_lines(p)) do back2[#back2 + 1] = ln end end
+	ok(#back2 == #doc, "쪽나눔: 고아 처리 후에도 줄 수가 같다", #back2 .. "/" .. #doc)
+	-- 헤더가 연속이어도 쪽을 비우지 않는다(무한 이월 방지)
+	T.LAY.MAXH = 40
+	local allh = P(mktext(20), { "─ 가", "─ 나", "─ 다", "─ 라" })
+	local n_all = 0
+	for _, p in ipairs(allh) do for _, ln in ipairs(T.split_lines(p)) do n_all = n_all + 1 end end
+	ok(n_all == 4, "쪽나눔: 헤더만 이어져도 줄을 잃지 않는다", tostring(n_all))
+
 	T.LAY.MAXH = saved
 	ok(T.LAY.MAXH == saved, "쪽나눔: 테스트가 LAY를 원복한다")
 end

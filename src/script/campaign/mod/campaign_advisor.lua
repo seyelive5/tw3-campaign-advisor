@@ -2010,6 +2010,23 @@ local function measure(textc, text)
 	return h
 end
 
+-- 쪽 끝에 홀로 남으면 안 되는 줄인가(다음 쪽으로 함께 넘긴다).
+--   ① 섹션 헤더 "─ …" — 제목만 남고 내용이 다음 쪽으로 가면 읽히지 않는다
+--   ② 번호 항목 "N. …" 바로 뒤에 들여쓴 설명이 오는 경우 — 제목과 설명이 갈린다
+--   근거: MAXH를 500으로 강제해 인게임에서 실제로 나눠 봤더니 기타 탭은
+--   "─ 지금 할 일"만 1쪽 끝에 남았고, 연구 탭은 "4. 피에 젖은 예복"과
+--   그 "티어 1 · 지도 효과 계열" 줄이 쪽 경계로 갈렸다.
+local function orphan_at(lines, idx)
+	local s = lines[idx]
+	if type(s) ~= "string" then return false end
+	if s:match("^─") then return true end
+	if s:match("^%d+%. ") then
+		local nx = lines[idx + 1]
+		if type(nx) == "string" and nx:match("^%s") then return true end
+	end
+	return false
+end
+
 -- 페이지 분할. 한 화면에 들어가면 측정 1회로 끝내고, 넘칠 때만 줄 단위로 채운다.
 local function paginate(textc, lines)
 	local whole = table.concat(lines, "\n")
@@ -2022,8 +2039,15 @@ local function paginate(textc, lines)
 		local hh = measure(textc, table.concat(cur, "\n"))
 		if hh and hh > LAY.MAXH and #cur > 1 then
 			cur[#cur] = nil
+			-- 고아 줄은 최대 2줄까지 같이 넘긴다. 쪽을 비우지는 않는다(#cur > 1).
+			local carry, back = { lines[i] }, i - 1
+			while #cur > 1 and (i - back) <= 2 and orphan_at(lines, back) do
+				table.insert(carry, 1, cur[#cur])
+				cur[#cur] = nil
+				back = back - 1
+			end
 			pages[#pages + 1] = table.concat(cur, "\n")
-			cur = { lines[i] }
+			cur = carry
 		end
 	end
 	if #cur > 0 then pages[#pages + 1] = table.concat(cur, "\n") end
