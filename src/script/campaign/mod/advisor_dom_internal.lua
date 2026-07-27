@@ -267,7 +267,7 @@ end
 -- 국고가 비어 아무것도 못 짓는데 "빈 건설칸부터 채우세요"라고 하면 안 되기 때문이다.
 local function build_construction(G, S, D)
 	if not CA_BLDQ or not CA_BLD then
-		return { "─ 건설: 건물표를 읽지 못했습니다 — 판단을 보류합니다." }, {}
+		return { "─ 건설: 건물 정보를 읽지 못했습니다." }, {}
 	end
 	local purse = (S and tonumber(S.treasury)) or nil
 	local mil = mil_of(S)
@@ -302,7 +302,7 @@ local function build_construction(G, S, D)
 	L[#L + 1] = string.format("─ 건설 (읽은 빈칸 %d · 업그레이드 가능 %d)", nfree, #ups)
 
 	if #withfree == 0 and #ups == 0 then
-		L[#L + 1] = "  지금 지을 자리도, 올릴 건물도 없습니다(읽은 범위 안에서)."
+		L[#L + 1] = "  지금 지을 자리도, 올릴 건물도 없습니다."
 		return L, { nfree = nfree, nups = 0 }
 	end
 
@@ -320,7 +320,7 @@ local function build_construction(G, S, D)
 	end
 	local broke = (purse and cheapest and purse < cheapest)
 	if broke then
-		L[#L + 1] = string.format("  ※ 국고 %s — 가장 싼 %s금짜리도 지금은 못 짓습니다. 아래는 돈이 모인 뒤 순서입니다.",
+		L[#L + 1] = string.format("  ⚠ 국고 %s — 가장 싼 %s금짜리도 지금은 못 짓습니다. 아래는 돈이 모인 뒤 순서입니다.",
 			comma(purse), comma(cheapest))
 	end
 
@@ -342,17 +342,18 @@ local function build_construction(G, S, D)
 			return a.lv < b.lv
 		end)
 		if #pool == 0 then
-			-- 사유를 지어내지 않는다. 원인은 둘 중 하나다: 슬롯 규칙 자체를 모르거나
-			-- (표에 없는 template_key), 규칙은 아는데 이 종족에 허용된 체인이 없거나.
-			-- ※ 예전엔 "(자원·수도 조건)"이라 적었는데, only_in_capital과
-			--   resource_requirement가 죽은 필드로 밝혀져 그 판정을 걷어냈다 — 거짓 사유였다.
+			-- 원인 구분(표에 없는 템플릿 vs 종족 제한)은 프루프로만 — 화면엔 결론만.
+			-- 예전 "(자원·수도 조건)"은 죽은 필드(v58)로 밝혀진 거짓 사유였고,
+			-- "(슬롯 규칙을 모름)"은 개발자 어휘라 사용자에게 무의미했다.
 			local known = false
 			for _, tpl in ipairs(r.free) do
 				if CA_BLD.slot and CA_BLD.slot[tpl] then known = true; break end
 			end
-			L[#L + 1] = string.format("• %s 빈칸 %d — 지을 수 있는 것이 없습니다(%s).",
-				rdisp(r.key), #r.free,
-				known and "이 종족에 허용된 건물이 없음" or "슬롯 규칙을 모름")
+			say(string.format("[내정] %s 건설 후보 0 — %s (tpl: %s)", tostring(r.key),
+				known and "종족에 허용된 체인 없음" or "표에 없는 슬롯템플릿",
+				table.concat(r.free, ",")))
+			L[#L + 1] = string.format("• %s 빈칸 %d — 지을 수 있는 건물이 없습니다.",
+				rdisp(r.key), #r.free)
 		else
 			local top = {}
 			for j = 1, math.min(#pool, 2) do
@@ -397,9 +398,9 @@ end
 
 -- ── 정착지가 없는 진영(호드 등) — 내정 대신 실상을 말한다 ────────────
 local function build_horde(S)
-	local L = { "【내정】 아직 정착지가 없습니다." }
-	L[#L + 1] = "호드는 군단 자체가 내정이지만, 군단 건물은 스크립트로 읽을 수 없어"
-	L[#L + 1] = "(해당 슬롯을 돌려주는 API가 없습니다) 여기서는 다루지 않습니다."
+	-- 군단 건물은 읽을 API가 없다(MILITARY_FORCE_SLOT 접근자 전수 검색 0건) —
+	-- 그 한계는 여기(주석)와 파일 헤더의 것이지 화면의 것이 아니다.
+	local L = { "【내정】 정착지가 없습니다. 지금은 군단 성장이 곧 내정입니다." }
 	local cand = S and S.threats and S.threats.settle
 	if type(cand) == "table" and #cand > 0 then
 		L[#L + 1] = ""
@@ -421,7 +422,8 @@ local function build(S, B)
 	local f = nil
 	pcall(function() f = cm:get_local_faction(true) end)
 	if not f then
-		return { "⚠ 팩션을 읽지 못했습니다 — 판단을 보류합니다(조용함≠안전)." }
+		say("[내정] 팩션 조회 실패")
+		return { "⚠ 내정 정보를 읽지 못했습니다." }
 	end
 
 	local G = gather(f)
@@ -430,8 +432,8 @@ local function build(S, B)
 	local D = B and B.D
 
 	if not G.ok then
-		return { "⚠ 내정 정보를 읽지 못했습니다 — 판단을 보류합니다.",
-		         "(지역 목록 조회 실패. 조용한 '문제 없음'으로 위장하지 않습니다.)" }
+		say("[내정] 지역 목록 조회 실패")
+		return { "⚠ 내정 정보를 읽지 못했습니다." }
 	end
 	if G.n_regions == 0 then return build_horde(S) end
 
@@ -489,7 +491,7 @@ local function build(S, B)
 			(#p > 0) and table.concat(p, " · ") or "(수치 없음)")
 	end
 	if #rs > 8 then L[#L + 1] = string.format("  … 외 %d곳", #rs - 8) end
-	if G.capped then L[#L + 1] = string.format("  ※ 성능 상한으로 앞 %d곳만 읽었습니다(전체 %d).", #G.regions, G.n_regions) end
+	if G.capped then L[#L + 1] = string.format("  (전체 %d곳 중 %d곳 기준)", G.n_regions, #G.regions) end
 
 	-- 속주 진행도 — collect_strategic이 이미 계산한 값 재사용(중복 조회 안 함)
 	local provs = S and S.strat and S.strat.provinces
@@ -578,12 +580,13 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 손볼 곳"
 		for i, t in ipairs(todo) do L[#L + 1] = string.format("%d. %s", i, t) end
 	else
-		L[#L + 1] = "─ 지금 손볼 곳: 눈에 띄는 문제가 없습니다(읽은 범위 안에서)."
+		L[#L + 1] = "─ 지금 손볼 곳: 특별한 문제가 없습니다."
 	end
 
 	if G.budget <= 0 then
+		say("[내정] 슬롯 상세 예산 소진 — 뒤쪽 지역 건설 후보 생략")
 		L[#L + 1] = ""
-		L[#L + 1] = "※ 슬롯 상세 조회 예산을 다 썼습니다 — 뒤쪽 지역의 건설 후보는 빠졌습니다."
+		L[#L + 1] = "  (영토가 많아 앞쪽 지역의 건설만 확인했습니다)"
 	end
 	return L
 end

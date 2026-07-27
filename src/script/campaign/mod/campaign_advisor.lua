@@ -40,7 +40,8 @@ local PROOF_PATH = "C:/Users/veria/tw3_advisor_proof.txt"
 --   실행되지 않는다. 반대로 1080p 사용자는 MAXH≈565라 '매번' 2쪽을 본다.
 --   그래서 해상도를 바꾸는 대신 이 값으로 강제해 한 번 확인한다.
 --   ※ DEBUG_FILE에 묶여 있다 — 배포 때 DEBUG_FILE=false면 자동으로 죽는다.
-local DEBUG_MAXH = 500
+--   v62에서 500으로 강제해 7탭 전부 검증 완료(쪽나눔·꼬리표·왕복·줄보존) → 원복.
+local DEBUG_MAXH = nil
 
 -- CA 실측 시드 상수
 local SEED = {
@@ -1124,7 +1125,7 @@ local function build_prose(S, D, cand, prof)
 	A[#A+1] = string.format("%s, %s%s %s턴 현재 %s.", rot(PROSE_OPEN), race, josa(race, "은", "는"), tostring(num(S.turn, "?")), join_clauses(cls))
 	-- U: 데이터 신뢰성(v35 — 문서1 0순위): 수집 실패를 '평온'으로 위장하지 않는다.
 	if S.health and #S.health > 0 then
-		U[#U+1] = string.format("⚠ 데이터 — 이번 클릭에 %s 정보를 읽지 못했습니다. 해당 영역은 판단을 보류합니다(조용함≠안전).", table.concat(S.health, "·"))
+		U[#U+1] = string.format("⚠ 이번에 %s 정보를 읽지 못했습니다 — 그 부분은 조언에서 뺐습니다.", table.concat(S.health, "·"))
 	end
 	-- U: 재정 활주로(v37 외삽) — 국면이 이미 재정위기로 말한 경우는 제외(중복 방지)
 	if S.proj and (S.proj.broke or (S.proj.runway and S.proj.runway <= 3)) and (not dg or dg.label ~= "재정 위기") then
@@ -2542,8 +2543,8 @@ local function content_for(id)
 	if type(lines) == "string" then lines = split_lines(lines) end
 	if type(lines) ~= "table" or #lines == 0 then
 		-- 실패 문구는 캐시하지 않는다 — 캐시해 버리면 일시적 실패가 그 턴 내내 굳는다.
-		return { "⚠ 이 항목을 읽지 못했습니다 — 짐작 대신 판단을 보류합니다.",
-		         ok and "(수집은 됐지만 내용이 비었습니다)" or "(수집 중 오류)" }
+		proof(string.format("v41 탭 %s 내용 없음(%s)", tostring(id), ok and "빈 반환" or "수집 오류"), true)
+		return { "⚠ 이 항목을 읽지 못했습니다." }
 	end
 	B.content[id] = lines
 	return lines

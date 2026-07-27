@@ -36,7 +36,7 @@ local RATIO_BAD, RATIO_GOOD = 0.8, 1.5
 -- 전선 하나에 대한 한 줄 판정. 전력비를 모르면 모른다고 한다.
 local function verdict(ratio, chest)
 	if ratio == nil then
-		return "전력을 읽지 못해 승산을 말할 수 없습니다."
+		return "전력 정보가 없어 승산은 따지지 않습니다."
 	end
 	local dry = (type(chest) == "number" and chest < WAR_CHEST_LOW)
 	if ratio < RATIO_BAD then
@@ -120,10 +120,10 @@ local function build(S, B)
 		tostring(fronts[1] and fronts[1].regions), tostring(fronts[1] and fronts[1].strength),
 		tostring(fronts[1] and fronts[1].chest)))
 
-	-- 기반 수집이 통째로 실패했으면 빈 화면 대신 그 사실을 말한다.
+	-- 기반 수집이 통째로 실패했으면 빈 화면 대신 그 사실을 말한다(상세는 프루프로).
 	if not (S.threats and S.threats.ok) and #fronts == 0 then
-		return { "⚠ 전쟁 정보를 읽지 못했습니다 — 판단을 보류합니다.",
-		         "(위협 수집이 실패했습니다. 조용한 '문제 없음'으로 위장하지 않습니다.)" }
+		say("[전쟁] 위협 수집 실패 + 전선 0 — 탭 보류")
+		return { "⚠ 전쟁 정보를 읽지 못했습니다." }
 	end
 
 	local L = {}
@@ -153,9 +153,10 @@ local function build(S, B)
 			if w.border then p[#p + 1] = "국경" end
 			if w.regions then p[#p + 1] = string.format("잔여 %d정착지", w.regions) end
 			-- 전력의 절대값(인게임 실측: 백만 단위 내부값)은 대조할 데가 없어 숨기고
-			-- 비율만 보여 준다. 전력을 읽었는데 비율을 못 낸 경우만 그 사실을 알린다.
-			if w.ratio then p[#p + 1] = string.format("전력비 %.2f배", w.ratio)
-			elseif w.strength then p[#p + 1] = "전력비 미상(우리 전력 조회 실패)" end
+			-- 비율만 보여 준다. "전국 기준" = 거리·배치를 반영하지 않는 팩션 총합 대 총합
+			-- (그 한계를 두 줄 강의하던 것을 세 글자 표기로 줄였다).
+			if w.ratio then p[#p + 1] = string.format("전력비 %.2f배(전국 기준)", w.ratio)
+			elseif w.strength then p[#p + 1] = "전력비 미상" end
 			if w.rank then p[#p + 1] = string.format("국력 %d위", w.rank) end
 			if type(w.chest) == "number" then p[#p + 1] = "군비 " .. comma(w.chest) end
 			local mark = ""
@@ -169,7 +170,7 @@ local function build(S, B)
 		if #fronts > 5 then L[#L + 1] = string.format("  … 외 %d전선", #fronts - 5) end
 	end
 	if far > 0 then
-		L[#L + 1] = string.format("  ※ 국경에서 떨어진 전선 %d개는 전력을 읽지 않았습니다(스캔 대상 밖).", far)
+		L[#L + 1] = string.format("  (국경 밖 전선 %d개는 수만 셌습니다)", far)
 	end
 
 	-- 방어
@@ -252,12 +253,9 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 할 일"
 		for i, t in ipairs(todo) do L[#L + 1] = string.format("%d. %s", i, t) end
 	else
-		L[#L + 1] = "─ 지금 할 일: 급한 것이 없습니다(읽은 범위 안에서)."
+		L[#L + 1] = "─ 지금 할 일: 특별히 급한 것이 없습니다."
 	end
-
-	L[#L + 1] = ""
-	L[#L + 1] = "※ 전력비는 팩션 전체 대 전체입니다 — 거리·배치를 반영하지 않으니"
-	L[#L + 1] = "   실제 교전 전에 현장 전력을 눈으로 확인하세요."
+	-- 전력비 한계 강의 두 줄은 뺐다 — 각 줄의 "(전국 기준)" 표기로 충분하다.
 	return L
 end
 

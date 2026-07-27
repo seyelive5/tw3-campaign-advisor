@@ -91,12 +91,17 @@ local function baseS(o)
 	for k, v in pairs(o or {}) do S[k] = v end
 	return S
 end
+-- 화면에 나가는 모든 출력을 모은다(v63) — 마지막에 금칙어(개발자 메타 발언) 검사를 돌린다.
+-- 브리핑(build_briefing)은 프루프 파일 전용이라 여기 안 모은다 — 거긴 메타가 있어야 하는 곳이다.
+local SCREEN = {}
+local function rec(s) SCREEN[#SCREEN + 1] = s; return s end
+
 local function run(S, prof)
 	prof = prof or T.get_profile(S)
 	S.proj = S.proj or T.project(S)   -- v37: 인게임 배선(run_advisor)과 동일
 	local D, cand = T.analyze(S, prof)
 	local dg = T.diagnose(S, D)
-	local prose = T.build_prose(S, D, cand, prof)
+	local prose = rec(T.build_prose(S, D, cand, prof))   -- 산문 = 패널(화면)
 	local brief = T.build_briefing(S, D, cand, prof)
 	return D, cand, dg, prose, brief, prof
 end
@@ -757,11 +762,14 @@ end
 do  -- 신뢰성 3-상태(문서1 0순위): 실패=경고, 정상=침묵 — '조용함'의 의미를 명시
 	local Sf = baseS{ health = { "위협", "외교" } }
 	local _, _, _, pf, bf = run(Sf)
-	ok(has(pf, "⚠ 데이터 — ") and has(pf, "위협·외교") and has(pf, "판단을 보류"), "신뢰성: 수집 실패 U 경고", pf:match("⚠[^\n]*"))
+	-- v63: 화면 문구에서 개발자 화법("데이터 — ", "판단을 보류(조용함≠안전)") 제거.
+	-- 실패 사실은 여전히 화면에 뜬다 — 다만 사람 말로.
+	ok(has(pf, "위협·외교") and has(pf, "정보를 읽지 못했습니다") and has(pf, "조언에서 뺐습니다"),
+		"신뢰성: 수집 실패 U 경고", pf:match("⚠[^\n]*"))
 	ok(has(bf, "수집상태: 실패=위협,외교"), "신뢰성: 파일 브리핑 실패 표기")
 	local So = baseS{ health = {} }
 	local _, _, _, po2, bo = run(So)
-	ok(not has(po2, "⚠ 데이터"), "신뢰성: 정상이면 경고 없음")
+	ok(not has(po2, "정보를 읽지 못했습니다"), "신뢰성: 정상이면 경고 없음")
 	ok(has(bo, "수집상태: 전 섹션 정상"), "신뢰성: 파일 브리핑 정상 표기")
 	-- 외교 단독 경로 회귀(병합 아닌 기존 문구 유지)
 	local Sp = baseS{ diplo = { peace = { "wh_main_brt_bretonnia" }, ally = {} } }
@@ -1199,7 +1207,7 @@ do
 	local function with(fac, S, B)
 		cm.get_local_faction = function() return fac end
 		if CA_BLDQ then CA_BLDQ.reset() end   -- 진영이 바뀌면 가용성 판정이 달라진다
-		return table.concat(TI.build(S, B), "\n")
+		return rec(table.concat(TI.build(S, B), "\n"))
 	end
 
 	-- ① 정상 제국: 두 지역, 치안 위기 + 빈칸 + 개발포인트 + 속주 진행
@@ -1263,8 +1271,9 @@ do
 	local regX = mkreg{ key = "wh_main_reg_x", prov = "p", gdp = 10,
 		slots = { mkslot(true, false, "tpl_that_does_not_exist") } }
 	local outX = with(mkfac({ regX }, {}), {}, {})
-	ok(has(outX, "지을 수 있는 것이 없습니다"),
+	ok(has(outX, "지을 수 있는 건물이 없습니다"),
 		"내정: 모르는 슬롯 템플릿은 '없음'으로 정직하게", outX:match("• X[^\n]*"))
+	ok(not has(outX, "슬롯 규칙"), "내정: 개발자 어휘(슬롯 규칙)가 화면에 안 나온다")
 
 	-- ①-f 태그 순위 — 태그는 '효과가 많은 계열 순'이라 앞일수록 그 건물의 본업이다.
 	--   치안이 1순위인 술집과 3순위인 야간보초를 같은 취급 하면 조언이 엉뚱해진다.
@@ -1365,18 +1374,19 @@ do
 		{ region = "wh3_reg_dark_fortress", owner = "wh3_main_ksl_kislev", at_war = true, suit = "suitability_good" },
 		{ region = "wh3_reg_zanbaijin", owner = "wh3_main_cth_west", at_war = false, suit = "suitability_verypoor" } } } }
 	local out4 = with(mkfac({}, {}), Sh, {})
-	ok(has(out4, "아직 정착지가 없습니다"), "호드: 내정 없음을 실상으로")
-	ok(has(out4, "읽을 수 없어"), "호드: 군단 건물 미조회를 정직하게")
+	-- v63: 호드 안내에서 API 강의("스크립트로 읽을 수 없어") 제거 — 상태 한 줄 + 후보만.
+	ok(has(out4, "정착지가 없습니다"), "호드: 내정 없음을 실상으로")
+	ok(not has(out4, "API") and not has(out4, "읽을 수 없어"), "호드: API 강의가 화면에 없다")
 	ok(has(out4, "Dark_fortress") or has(out4, "Fortress"), "호드: 첫 정착지 후보 지목", out4)
 	ok(has(out4, "선전포고 필요") and has(out4, "기후 부적합"), "호드: 후보 제약 태그")
 
-	-- ⑤ 수집 실패는 '문제 없음'으로 위장하지 않는다
+	-- ⑤ 수집 실패는 '문제 없음'으로 위장하지 않는다 — 화면엔 사람 말 한 줄
 	local broken = { region_list = function() error("boom") end }
 	local out5 = with(broken, {}, {})
-	ok(has(out5, "판단을 보류"), "내정: 수집 실패 = 보류 명시", out5)
+	ok(has(out5, "내정 정보를 읽지 못했습니다") and not has(out5, "위장"), "내정: 수집 실패 한 줄 명시", out5)
 	cm.get_local_faction = function() return nil end
-	local out6 = table.concat(TI.build({}, {}), "\n")
-	ok(has(out6, "팩션을 읽지 못했습니다"), "내정: 팩션 조회 실패 명시")
+	local out6 = rec(table.concat(TI.build({}, {}), "\n"))
+	ok(has(out6, "내정 정보를 읽지 못했습니다"), "내정: 팩션 조회 실패 명시")
 
 	-- ⑥ 대규모 제국: 상위 8곳 + '외 N' 상한
 	local many = {}
@@ -1418,7 +1428,7 @@ do
 	local function mkfac(forces) return { military_force_list = function() return mklist(forces) end } end
 	local function with(fac, S)
 		cm.get_local_faction = function() return fac end
-		return table.concat(TM.build(S or {}, {}), "\n")
+		return rec(table.concat(TM.build(S or {}, {}), "\n"))
 	end
 
 	-- ① 태세 표기: 아는 값은 한글, 모르는 값은 접두사만 떼고 날것으로
@@ -1475,9 +1485,9 @@ do
 	local out4 = with(mkfac({ garrison, navy }), {})
 	ok(has(out4, "야전군이 없습니다") and has(out4, "함대 1"), "군사: 야전군 0은 실상으로", out4:match("^[^\n]*"))
 	local out5 = with({ military_force_list = function() error("boom") end }, {})
-	ok(has(out5, "판단을 보류"), "군사: 수집 실패 = 보류 명시")
+	ok(has(out5, "군사 정보를 읽지 못했습니다"), "군사: 수집 실패 한 줄 명시")
 	cm.get_local_faction = function() return nil end
-	ok(has(table.concat(TM.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "군사: 팩션 조회 실패 명시")
+	ok(has(rec(table.concat(TM.build({}, {}), "\n")), "군사 정보를 읽지 못했습니다"), "군사: 팩션 조회 실패 명시")
 
 	-- ⑦ 전력비는 전략 수집분을 재사용한다(다시 조회하지 않음)
 	local out6 = with(mkfac({ a1 }), { regions = 2,
@@ -1527,7 +1537,7 @@ do
 	end
 	local function with(fac, S)
 		cm.get_local_faction = function() return fac end
-		return table.concat(TD.build(S or {}, {}), "\n")
+		return rec(table.concat(TD.build(S or {}, {}), "\n"))
 	end
 
 	-- ① 전형적 중반: 전쟁 3 · 동맹 1 · 교역 제안 가능
@@ -1554,9 +1564,10 @@ do
 	ok(has(out1, "연맹이 성사됩니다") and has(out1, "최우선"), "외교: 연맹은 최우선으로")
 	ok(has(out1, "불가침이 성사되니"), "외교: 적대 이웃에 불가침이 가능하면 그것부터")
 
-	-- ② 관계 눈금을 모르므로 '좋다/나쁘다'로 옮기지 않는다
-	ok(not has(out1, "관계가 좋") and not has(out1, "관계가 나쁘") and has(out1, "눈금을 아직 실측하지 못해"),
-		"외교: 미측정 눈금을 판정으로 옮기지 않음")
+	-- ② 관계 눈금을 모르므로 '좋다/나쁘다'로 옮기지 않는다.
+	--    v63: 그 사실을 화면에서 강의하지도 않는다 — 동작(날값 표기)만 지킨다.
+	ok(not has(out1, "관계가 좋") and not has(out1, "관계가 나쁘") and not has(out1, "눈금"),
+		"외교: 미측정 눈금을 판정으로 옮기지도, 강의하지도 않음")
 	ok(TD.rel_tag({ standing = -5 }) == "관계 -5", "외교: 관계 꼬리표는 날값", TD.rel_tag({ standing = -5 }))
 	ok(TD.rel_tag({ attitude = 7 }) == "태도 +7", "외교: standing 없으면 attitude로 대체")
 	ok(TD.rel_tag({}) == nil, "외교: 둘 다 없으면 표시하지 않음")
@@ -1577,7 +1588,7 @@ do
 
 	-- ⑤ 기반 수집(S.diplo) 실패는 숨기지 않는다
 	local out4 = with(f3, { border_enemies = {}, border_others = {}, diplo = { ok = false } })
-	ok(has(out4, "기반 수집이 실패해 읽지 못했습니다"), "외교: 화친·동맹 가부 조회 실패 명시")
+	ok(has(out4, "화친·군사동맹 성사 여부는 이번에 읽지 못했습니다"), "외교: 화친·동맹 가부 조회 실패 명시")
 
 	-- ⑥ CAI 호출 예산: 상대가 많아도 상한을 넘기지 않고, 넘겼으면 밝힌다
 	ACCEPT = {}
@@ -1587,7 +1598,9 @@ do
 	local f4 = mkfac{ at_war = false, n_allies = 4, wars = {}, allies = { "a1","a2","a3","a4" } }
 	local out5 = with(f4, { border_others = many, diplo = { ok = true, peace = {}, ally = {} } })
 	ok(CALLS.n <= TD.BUDGET, "외교: CAI 호출이 예산을 넘지 않음", CALLS.n .. "/" .. TD.BUDGET)
-	ok(has(out5, "조회 예산"), "외교: 예산 소진 사실을 밝힘")
+	-- v63: '예산' 같은 내부 어휘 없이, 다 못 봤다는 사실만 사람 말로.
+	ok(has(out5, "일부만 확인했습니다") and not has(out5, "예산"),
+		"외교: 커버리지 한계를 사람 말로 밝힘")
 
 	-- ⑦ 조사: 팩션 이름 받침에 따라 과/와·이/가가 갈린다(이름은 현지화 결과라
 	--    받침을 미리 알 수 없으므로 반드시 josa를 거쳐야 한다)
@@ -1608,9 +1621,9 @@ do
 
 	-- ⑧ 수집 실패 / 팩션 없음
 	local out6 = with({ factions_at_war_with = function() error("boom") end }, {})
-	ok(has(out6, "판단을 보류"), "외교: 수집 실패 = 보류 명시")
+	ok(has(out6, "외교 정보를 읽지 못했습니다"), "외교: 수집 실패 한 줄 명시")
 	cm.get_local_faction = function() return nil end
-	ok(has(table.concat(TD.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "외교: 팩션 조회 실패 명시")
+	ok(has(rec(table.concat(TD.build({}, {}), "\n")), "외교 정보를 읽지 못했습니다"), "외교: 팩션 조회 실패 명시")
 
 	cm.get_local_faction, cm.get_faction, cm.cai_evaluate_quick_deal_action = saved_getf, saved_getfac, saved_cai
 end
@@ -1627,10 +1640,10 @@ do
 			diplo = o.diplo, plan = o.plan,
 		}
 	end
-	local function txt(o) return table.concat(TW.build(S_of(o), {}), "\n") end
+	local function txt(o) return rec(table.concat(TW.build(S_of(o), {}), "\n")) end
 
 	-- ① 승산 판정 — 전력비를 모르면 모른다고 한다
-	ok(TW.verdict(nil, nil):find("말할 수 없습니다") ~= nil, "전쟁: 전력 미상이면 승산 판정 보류")
+	ok(TW.verdict(nil, nil):find("승산은 따지지 않습니다") ~= nil, "전쟁: 전력 미상이면 승산 판정 보류")
 	ok(TW.verdict(0.5, 1000):find("불리") ~= nil, "전쟁: 0.8 미만 = 불리")
 	ok(TW.verdict(2.0, 1000):find("우세") ~= nil, "전쟁: 1.5 이상 = 우세")
 	ok(TW.verdict(2.0, 0):find("군비가 말랐") ~= nil, "전쟁: 우세 + 군비 고갈 = 몰아칠 때")
@@ -1685,12 +1698,13 @@ do
 		threat = { { region = "reg_z", faction = "e9", on_land = false, defended = true } } }
 	ok(has(out4, "아래 위협이 잡혔습니다") and has(out4, "인접에 적군"), "전쟁: 전쟁 없이 위협만 있을 때")
 
-	-- ⑦ 위협 수집 실패는 숨기지 않는다
+	-- ⑦ 위협 수집 실패는 숨기지 않는다 — 화면엔 사람 말 한 줄
 	local out5 = txt{ tok = false, war_set = {} }
-	ok(has(out5, "판단을 보류"), "전쟁: 위협 수집 실패 = 보류 명시")
+	ok(has(out5, "전쟁 정보를 읽지 못했습니다"), "전쟁: 수집 실패 한 줄 명시")
 
-	-- ⑧ 전력비의 한계를 본문에 밝힌다
-	ok(has(out1, "거리·배치를 반영하지 않으니"), "전쟁: 전력비가 전체 대 전체임을 명시")
+	-- ⑧ 전력비의 성격은 강의 대신 표기로 — "(전국 기준)"이 수치에 붙는다
+	ok(has(out1, "배(전국 기준)"), "전쟁: 전력비에 전국 기준 표기", out1:match("[^\n]*전력비[^\n]*"))
+	ok(not has(out1, "거리·배치를 반영하지"), "전쟁: 전력비 한계 강의는 화면에서 제거")
 
 	-- ⑨ 조사
 	local out6 = txt{ mine = 100, border = { "wh_main_grn_greenskins" },
@@ -1730,7 +1744,7 @@ do
 	end
 	local function with(fac, S)
 		cm.get_local_faction = function() return fac end
-		return table.concat(TA.build(S or { faction = "me" }, {}), "\n")
+		return rec(table.concat(TA.build(S or { faction = "me" }, {}), "\n"))
 	end
 
 	-- ① 타입 한글화: 아는 키는 한글, 모르는 키(종족 고유)는 날값으로 살려 둔다
@@ -1806,12 +1820,13 @@ do
 	-- ⑤ 수집 실패 / 팩션 없음
 	local out4 = with({ name = function() return "me" end,
 		character_list = function() error("boom") end })
-	ok(has(out4, "판단을 보류"), "기타: 수집 실패 = 보류 명시")
+	ok(has(out4, "인물 정보를 읽지 못했습니다"), "기타: 수집 실패 한 줄 명시")
 	cm.get_local_faction = function() return nil end
-	ok(has(table.concat(TA.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "기타: 팩션 조회 실패 명시")
+	ok(has(rec(table.concat(TA.build({}, {}), "\n")), "인물 정보를 읽지 못했습니다"), "기타: 팩션 조회 실패 명시")
 
-	-- ⑥ 한계를 밝힌다
-	ok(has(out1, "여기 없다고 없는 게 아닙니다"), "기타: 시야 밖은 셀 수 없음을 명시")
+	-- ⑥ v63: 한계 강의(시야 밖·정원 API·성공률)는 화면에서 제거됐다
+	ok(not has(out1, "여기 없다고 없는 게") and not has(out1, "정원 API"),
+		"기타: 한계 강의가 화면에 없다")
 
 	cm.get_local_faction, common = saved_getf, saved_common
 end
@@ -1857,7 +1872,7 @@ do
 	end
 	local function with(fac, S, B)
 		cm.get_local_faction = function() return fac end
-		return table.concat(TT.build(S or {}, B or {}), "\n")
+		return rec(table.concat(TT.build(S or {}, B or {}), "\n"))
 	end
 
 	-- ① 노드셋 선택: 팩션 > 서브컬처 > 컬처
@@ -1922,17 +1937,19 @@ do
 
 	-- ⑥ 표에 없는 진영은 짐작하지 않는다
 	local out5 = with(mkfac{ researching = true, done = 0 }, { subculture = "sc_모드종족" })
-	ok(has(out5, "추천을 만들지 못했습니다") and has(out5, "짐작으로 권하지 않겠습니다"),
-		"연구: 표에 없는 진영은 보류", out5:match("[^\n]*찾지 못했습니다[^\n]*"))
+	-- v63: 미지원 진영은 장황한 사유 대신 한 줄. 사유(노드셋 미일치)는 프루프로.
+	ok(has(out5, "연구 추천은 지원하지 않습니다"),
+		"연구: 표에 없는 진영은 한 줄로 보류", out5:match("─ 이 진영[^\n]*"))
 
 	-- ⑥-b 트리 모델이 이 진영과 안 맞을 때(카타이·젠취 같은 원형 트리):
-	--     게임은 연구할 게 있다는데 후보가 0개 → 틀린 확신 대신 사실만 말한다
+	--     게임은 연구할 게 있다는데 후보가 0개 → 틀린 확신 대신 남은 목록 + 잠김 주의
 	local out5b = with(mkfac{ owned = {}, researching = true, any_left = true, done = 0 },
 		{ subculture = "sc_ring" })
-	ok(has(out5b, "아직 하지 않은 기술") and has(out5b, "선행조건은 확인하지 못했습니다"),
+	ok(has(out5b, "아직 연구하지 않은 기술") and has(out5b, "잠겨 있을 수 있습니다"),
 		"연구: 트리 모델 불일치 시 확실한 것만 보여 준다", out5b:match("─ 아직[^\n]*"))
 	ok(has(out5b, "r1") and has(out5b, "r2"), "연구: 폴백에도 목록은 나온다")
-	ok(not has(out5b, "선행조건 충족"), "연구: 폴백에서 '충족'이라고 주장하지 않는다")
+	ok(not has(out5b, "선행조건 충족") and not has(out5b, "원형으로 짜여"),
+		"연구: 폴백에서 '충족' 주장도, 트리 구조 강의도 하지 않는다")
 
 	-- ⑦ 다 올렸으면 다 올렸다고
 	local out6 = with(mkfac{ owned = { t1=true,t2a=true,t2b=true,t3=true,t4=true },
@@ -1944,8 +1961,9 @@ do
 	with(f1, { subculture = "sc_emp" })
 	ok(CALLS.n <= TT.BUDGET, "연구: has_technology 호출이 예산 이내", CALLS.n .. "/" .. TT.BUDGET)
 
-	-- ⑨ 효과 수치를 못 읽는다는 사실을 밝힌다
-	ok(has(out1, "개별 효과 수치는 읽지 않았습니다"), "연구: 효과 미조회를 명시")
+	-- ⑨ v63: 효과 미조회 강의는 화면에서 제거됐다(계열 표기 자체가 그 정보를 전달)
+	ok(not has(out1, "개별 효과 수치는 읽지 않았습니다") and not has(out1, "※"),
+		"연구: 한계 강의가 화면에 없다")
 	-- ⑨-b 기술 이름은 로컬라이즈를 거친다(원시 키를 그대로 뿌리지 않는다).
 	--   v54 인게임 판독에서 `wh3_dlc20_chs_kho_warriors_gift_slot_2`가 그대로 떴다.
 	--   하니스는 common=nil이라 폴백 경로(접두사 제거·밑줄→공백)를 검증한다.
@@ -1954,7 +1972,7 @@ do
 
 	-- ⑩ 팩션 조회 실패
 	cm.get_local_faction = function() return nil end
-	ok(has(table.concat(TT.build({}, {}), "\n"), "팩션을 읽지 못했습니다"), "연구: 팩션 조회 실패 명시")
+	ok(has(rec(table.concat(TT.build({}, {}), "\n")), "연구 정보를 읽지 못했습니다"), "연구: 팩션 조회 실패 명시")
 
 	cm.get_local_faction, CA_TECH = saved_getf, saved_tech
 end
@@ -1994,6 +2012,38 @@ do
 	for _, c in ipairs(cand2) do if c.key == "military" then mil2 = c end end
 	ok(mil2 ~= nil and has(table.concat(mil2.reasons, " ; "), "모집 여력"),
 		"국고고갈: 금고가 있으면 모집 여력 근거는 유지", mil2 and table.concat(mil2.reasons, " ; "))
+end
+
+-- ── 22. 화면 문구 위생 — 개발자 메타 발언 금지 (v63) ──────────────────
+-- 사용자 지적: "API가 없어" "판단을 보류" "읽은 범위 안에서" 같은 개발자 일지가
+-- 화면에 그대로 표출됐다. 그런 건 프루프 파일의 것이다. 위에서 모은 화면 출력
+-- 전부(SCREEN — 탭 7종 + 산문)에 금칙어가 하나라도 있으면 실패한다.
+-- 이 가드가 있는 한, 새 탭 코드가 메타 발언을 다시 들이면 그 자리에서 걸린다.
+log("== 22. 화면 문구 위생 ==")
+do
+	local banned = {
+		"※",                  -- 각주 마커 자체를 화면에서 금지(커버리지는 괄호 한 줄로)
+		"판단을 보류", "판단 보류",
+		"읽은 범위 안",
+		"위장하지",
+		"짐작",
+		"조회 예산", "성능 상한",
+		"API",
+		"실측하지",
+		"스캔 대상",
+		"슬롯 규칙", "기술표",   -- 개발자 어휘
+	}
+	local nbad = 0
+	for i, s in ipairs(SCREEN) do
+		for _, b in ipairs(banned) do
+			if s:find(b, 1, true) then
+				nbad = nbad + 1
+				ok(false, string.format("위생: 화면 출력 #%d에 금칙어 '%s'", i, b),
+					s:match("[^\n]*" .. b:gsub("[%%%.%[%]%(%)%*%+%-%?%^%$]", "%%%0") .. "[^\n]*"))
+			end
+		end
+	end
+	ok(nbad == 0, string.format("위생: 화면 출력 %d건에서 금칙어 0건", #SCREEN))
 end
 
 -- ── 리포트 출력 ───────────────────────────────────────────────────────

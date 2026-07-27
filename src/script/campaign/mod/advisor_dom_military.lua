@@ -175,15 +175,16 @@ local function build(S, B)
 	local f = nil
 	pcall(function() f = cm:get_local_faction(true) end)
 	if not f then
-		return { "⚠ 팩션을 읽지 못했습니다 — 판단을 보류합니다(조용함≠안전)." }
+		say("[군사] 팩션 조회 실패")
+		return { "⚠ 군사 정보를 읽지 못했습니다." }
 	end
 
 	local G = gather(f)
 	probe(G)
 
 	if not G.ok then
-		return { "⚠ 군대 정보를 읽지 못했습니다 — 판단을 보류합니다.",
-		         "(군단 목록 조회 실패. 조용한 '문제 없음'으로 위장하지 않습니다.)" }
+		say("[군사] 군단 목록 조회 실패")
+		return { "⚠ 군사 정보를 읽지 못했습니다." }
 	end
 
 	local L = {}
@@ -218,7 +219,7 @@ local function build(S, B)
 	if regions > 0 then head[#head + 1] = string.format("군대밀도 %.2f", n / regions) end
 	L[#L + 1] = "【군사】 " .. table.concat(head, " · ")
 	if G.capped then
-		L[#L + 1] = string.format("　※ 성능 상한으로 앞 %d개 부대만 읽었습니다(전체 %d).", MAX_FORCE, G.n_forces)
+		L[#L + 1] = string.format("　(전체 %d개 부대 중 %d개 기준)", G.n_forces, MAX_FORCE)
 	end
 
 	-- 군단 목록(전력 내림차순)
@@ -319,7 +320,7 @@ local function build(S, B)
 		if bk then
 			local ratio = G.strength / bs
 			L[#L + 1] = ""
-			L[#L + 1] = string.format("─ 전력비: %s 대비 %.2f배", fdisp(bk), ratio)
+			L[#L + 1] = string.format("─ 전력비: %s 대비 %.2f배(전국 기준)", fdisp(bk), ratio)
 			if ratio < 0.8 then
 				add(string.format("%s와의 야전 전력비가 %.2f배입니다 — 정면 충돌은 불리합니다.", fdisp(bk), ratio))
 			end
@@ -331,15 +332,11 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 손볼 곳"
 		for i, t in ipairs(todo) do L[#L + 1] = string.format("%d. %s", i, t) end
 	else
-		L[#L + 1] = "─ 지금 손볼 곳: 눈에 띄는 문제가 없습니다(읽은 범위 안에서)."
+		L[#L + 1] = "─ 지금 손볼 곳: 특별한 문제가 없습니다."
 	end
-
-	L[#L + 1] = ""
-	-- v56 정정: DB는 이제 있다(건물 → 해금 유닛, 6,396행). 없는 것은 "지금 이 군단이
-	-- 뭘 뽑을 수 있나"를 묻는 API다 — can_recruit_unit_class로 병종 가부만 물을 수 있다.
-	L[#L + 1] = "※ 지금 이 군단이 뽑을 수 있는 유닛 '목록'을 묻는 API가 없어(병종 가부만"
-	L[#L + 1] = "   가능) 여기서는 이름을 대지 않습니다. 무엇을 지으면 무엇이 풀리는지는"
-	L[#L + 1] = "   내정 탭 건설 항목에 유닛 이름으로 나옵니다."
+	-- 모집 가능 유닛 '목록' API는 없다(can_recruit_unit_class로 병종 가부만) — 그래서
+	-- 이 탭은 유닛 이름을 대지 않는다. 그 한계 설명을 화면에 쓰던 것은 뺐다(사용자 지적:
+	-- 개발자 메타 발언). 유닛 이름은 내정 탭 건설 항목(건물→해금 유닛)이 맡는다.
 	return L
 end
 

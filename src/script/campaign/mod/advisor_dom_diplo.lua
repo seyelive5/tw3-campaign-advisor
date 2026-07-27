@@ -156,15 +156,16 @@ local function build(S, B)
 	local f = nil
 	pcall(function() f = cm:get_local_faction(true) end)
 	if not f then
-		return { "⚠ 팩션을 읽지 못했습니다 — 판단을 보류합니다(조용함≠안전)." }
+		say("[외교] 팩션 조회 실패")
+		return { "⚠ 외교 정보를 읽지 못했습니다." }
 	end
 
 	local G = gather(f, S)
 	probe(G)
 
 	if not G.ok then
-		return { "⚠ 외교 정보를 읽지 못했습니다 — 판단을 보류합니다.",
-		         "(관계 목록 조회 실패. 조용한 '문제 없음'으로 위장하지 않습니다.)" }
+		say("[외교] 관계 목록 조회 실패")
+		return { "⚠ 외교 정보를 읽지 못했습니다." }
 	end
 
 	-- 기반 수집이 이미 평가한 화친·군사동맹
@@ -250,10 +251,11 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 성사되는 것: 없습니다(제안해도 거절당합니다)."
 	end
 	if dip_failed then
-		L[#L + 1] = "  ※ 화친·군사동맹 가부는 기반 수집이 실패해 읽지 못했습니다."
+		L[#L + 1] = "  ⚠ 화친·군사동맹 성사 여부는 이번에 읽지 못했습니다."
 	end
 	if G.budget_hit then
-		L[#L + 1] = string.format("  ※ 조회 예산(%d회)을 다 써 일부 상대는 확인하지 못했습니다.", BUDGET)
+		say(string.format("[외교] CAI 평가 예산 %d회 소진 — 일부 상대 미확인", BUDGET))
+		L[#L + 1] = "  (상대가 많아 일부만 확인했습니다)"
 	end
 
 	-- 조심할 곳(v36 CAI 스탠스 — 전쟁 전인데 적대)
@@ -315,9 +317,8 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 할 일: 외교로 풀 수 있는 게 없습니다. 전쟁은 전장에서 끝내야 합니다."
 	end
 
-	L[#L + 1] = ""
-	L[#L + 1] = "※ 관계 수치는 게임이 준 날값 그대로입니다 — 눈금을 아직 실측하지 못해"
-	L[#L + 1] = "   '좋다/나쁘다'로 옮기지 않습니다. 상대가 요구할 대가도 알 수 없습니다."
+	-- 관계 수치의 눈금 미실측·대가 미조회 같은 한계 설명은 화면에서 뺐다(사용자 지적:
+	-- 개발자 메타 발언). 동작은 그대로 — 날값을 '좋다/나쁘다'로 옮기지 않는다.
 	return L
 end
 

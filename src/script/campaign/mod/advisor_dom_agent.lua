@@ -179,8 +179,10 @@ end
 local function build(S, B)
 	local f, my_key = nil, (S and S.faction) or nil
 	pcall(function() f = cm:get_local_faction(true) end)
+	-- 실패 사유는 프루프에만. 화면은 한 줄로 끝낸다 — 사용자는 왜가 아니라 상태가 필요하다.
 	if not f then
-		return { "⚠ 팩션을 읽지 못했습니다 — 판단을 보류합니다(조용함≠안전)." }
+		say("[기타] 팩션 조회 실패")
+		return { "⚠ 인물 정보를 읽지 못했습니다." }
 	end
 	if not my_key then pcall(function() my_key = f:name() end) end
 
@@ -188,8 +190,8 @@ local function build(S, B)
 	probe(G)
 
 	if not G.ok then
-		return { "⚠ 인물 정보를 읽지 못했습니다 — 판단을 보류합니다.",
-		         "(인물 목록 조회 실패. 조용한 '문제 없음'으로 위장하지 않습니다.)" }
+		say("[기타] 인물 목록 조회 실패")
+		return { "⚠ 인물 정보를 읽지 못했습니다." }
 	end
 
 	local L = {}
@@ -279,7 +281,7 @@ local function build(S, B)
 		end
 		if #G.foreign > 5 then L[#L + 1] = string.format("  … 외 %d팩션", #G.foreign - 5) end
 		if G.foreign_capped then
-			L[#L + 1] = string.format("  ※ 성능 상한으로 앞 %d명만 셌습니다(전체 %d).", MAX_FOREIGN, G.foreign_n)
+			L[#L + 1] = string.format("  (전체 %d명 중 %d명 기준)", G.foreign_n, MAX_FOREIGN)
 		end
 	end
 
@@ -314,14 +316,11 @@ local function build(S, B)
 		L[#L + 1] = "─ 지금 할 일"
 		for i, t in ipairs(todo) do L[#L + 1] = string.format("%d. %s", i, t) end
 	else
-		L[#L + 1] = "─ 지금 할 일: 요원 쪽에 급한 것이 없습니다(읽은 범위 안에서)."
+		L[#L + 1] = "─ 지금 할 일: 요원 쪽은 특별한 것이 없습니다."
 	end
-
-	L[#L + 1] = ""
-	L[#L + 1] = "※ 아직 없는 종류의 요원을 뽑을 수 있는지는 말하지 않습니다 — 정원 API가"
-	L[#L + 1] = "   종족과 무관한 값을 돌려주는 것을 인게임에서 확인했습니다(카타이에 룬장인)."
-	L[#L + 1] = "   요원 행동의 성공률과 적 요원의 의도도 조회할 방법이 없고,"
-	L[#L + 1] = "   보이지 않는 곳의 적 인물은 셀 수 없습니다 — 여기 없다고 없는 게 아닙니다."
+	-- 화면에 늘어놓던 한계 강의(정원 API 왜곡·성공률 조회 불가·시야 밖 미포착)는 뺐다.
+	-- 사용자 지적: 개발자 메타 발언은 화면이 아니라 디버그의 것. 근거는 이 파일 헤더와
+	-- v49~v50 프루프 실측 기록에 있다. 동작(미보유 종류 미표시 등)은 그대로다.
 	return L
 end
 
