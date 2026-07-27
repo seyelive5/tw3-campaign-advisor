@@ -130,6 +130,72 @@ do
 	ok(bn:find("스캔 상한", 1, true) == nil, "스캔상한: 도달 안 했으면 줄 자체가 없다")
 end
 
+-- ══ 0b. 페이지 분할 (v61) ════════════════════════════════════════════
+-- 인게임에서 한 번도 실행된 적이 없는 경로다. 우리 기기는 MAXH=968인데 관측된
+-- 본문 최대가 866(연구 탭)이라 늘 1/1이었다. 그런데 MAXH는 화면 높이에서 나온다
+-- (rh - 176 - 96). 1080p 사용자의 UI 공간은 ~837이라 MAXH≈565 — 연구·기타·내정
+-- 탭이 '지금도' 2쪽이다. 즉 후반 세이브 문제가 아니라 해상도 문제다.
+log("== 0b. 페이지 분할 ==")
+do
+	local P = T.paginate
+	-- 가짜 텍스트 컴포넌트: 높이 = 줄 수 × 20 (실제 폰트 대신 선형 근사)
+	local function mktext(px_per_line)
+		return {
+			ResizeTextResizingComponentToInitialSize = function() end,
+			SetStateText = function(self, s) self._s = s end,
+			TextDimensions = function(self)
+				local n = 1
+				for _ in tostring(self._s or ""):gmatch("\n") do n = n + 1 end
+				return 400, n * px_per_line
+			end,
+			TextYOffset = function() return 0, 0 end,
+		}
+	end
+	local function mklines(n)
+		local t = {}
+		for i = 1, n do t[i] = string.format("%d. 줄 내용 %d", i, i) end
+		return t
+	end
+	local saved = T.LAY.MAXH
+
+	ok(#P(nil, mklines(200)) == 1, "쪽나눔: 측정 불가면 자르지 않는다(잘림 < 통째로)")
+
+	T.LAY.MAXH = 200                      -- 10줄/쪽
+	local lines = mklines(45)
+	local pages = P(mktext(20), lines)
+	ok(#pages > 1, "쪽나눔: 넘치면 실제로 나뉜다", "쪽 " .. #pages)
+	-- 한 줄도 잃거나 겹치면 안 된다
+	local back = {}
+	for _, pg in ipairs(pages) do
+		for _, ln in ipairs(T.split_lines(pg)) do back[#back + 1] = ln end
+	end
+	ok(#back == #lines, "쪽나눔: 줄이 사라지지 않는다", #back .. "/" .. #lines)
+	local same = true
+	for i = 1, #lines do if back[i] ~= lines[i] then same = false; break end end
+	ok(same, "쪽나눔: 순서와 내용이 보존된다")
+	-- 어떤 쪽도 한도를 넘지 않는다
+	local over = 0
+	for _, pg in ipairs(pages) do
+		local n = 1; for _ in pg:gmatch("\n") do n = n + 1 end
+		if n * 20 > T.LAY.MAXH then over = over + 1 end
+	end
+	ok(over == 0, "쪽나눔: 어떤 쪽도 한도를 넘지 않는다", "초과 " .. over .. "쪽")
+
+	-- 한 줄이 통째로 한도를 넘어도 무한루프에 빠지지 않는다(그 줄만 한 쪽)
+	T.LAY.MAXH = 10
+	local huge = P(mktext(20), { "가", "나", "다" })
+	ok(#huge == 3, "쪽나눔: 한 줄이 한도를 넘어도 진행한다", "쪽 " .. #huge)
+
+	-- 1080p 시나리오: 42턴 실측 연구 탭 높이(866)를 MAXH 565에 넣으면 2쪽이어야 한다
+	T.LAY.MAXH = 565
+	local tech_like = mklines(43)         -- 43줄 × 20 = 860 ≈ 실측 866
+	local tp = P(mktext(20), tech_like)
+	ok(#tp == 2, "쪽나눔: 1080p(MAXH 565)에서 연구 탭 분량은 2쪽", "쪽 " .. #tp)
+
+	T.LAY.MAXH = saved
+	ok(T.LAY.MAXH == saved, "쪽나눔: 테스트가 LAY를 원복한다")
+end
+
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
 log("== 1. 한국어 조사 ==")
 ok(T.has_batchim("제국") == true,  "받침: 제국=true")

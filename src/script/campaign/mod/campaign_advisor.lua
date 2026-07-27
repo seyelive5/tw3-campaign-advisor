@@ -32,6 +32,16 @@ local BUTTON_TEMPLATE = "ui/templates/round_medium_button"
 local DEBUG_FILE = true
 local PROOF_PATH = "C:/Users/veria/tw3_advisor_proof.txt"
 
+-- 페이지 분할 강제(검증용). nil이면 평소대로 화면 높이에서 계산한다.
+--   왜 필요한가: MAXH = 화면높이 - 176 - 96 이다. 개발 기기는 UI 공간이 1240이라
+--   MAXH=968인데, 탭 본문은 목록마다 상한이 있어 가장 긴 연구 탭도 866줄이다
+--   (영토 25로 돌려도 내정 탭은 28줄=560px — 영토 수와 거의 무관하다).
+--   즉 이 기기에서는 어떤 세이브로도 2쪽이 되지 않아 페이지 코드가 한 번도
+--   실행되지 않는다. 반대로 1080p 사용자는 MAXH≈565라 '매번' 2쪽을 본다.
+--   그래서 해상도를 바꾸는 대신 이 값으로 강제해 한 번 확인한다.
+--   ※ DEBUG_FILE에 묶여 있다 — 배포 때 DEBUG_FILE=false면 자동으로 죽는다.
+local DEBUG_MAXH = 500
+
 -- CA 실측 시드 상수
 local SEED = {
 	army_base = 55, cons_base = 40,   -- default 예산배분(%)
@@ -2200,6 +2210,9 @@ local function ui_build_tabs(doms)
 		-- 본문 폭·높이를 화면에서 뽑는다(고정값이면 해상도마다 남거나 잘린다).
 		LAY.COL  = clamp(math.floor(rw * 0.34), 460, 720)
 		LAY.MAXH = clamp(rh - LAY.Y - 96, 240, 980)         -- 96 = 본문 아래 페이지 버튼 자리
+		-- 검증용 강제(DEBUG_FILE에 묶임 → 배포 시 자동 무력화). 낮은 해상도 사용자가
+		-- 늘 보게 되는 2쪽 경로를 개발 기기에서 재현하기 위한 것.
+		if DEBUG_FILE and DEBUG_MAXH then LAY.MAXH = DEBUG_MAXH end
 		-- 탭 줄은 패널 폭에 정확히 맞춘다. v41은 탭 줄이 패널보다 배 가까이 넓어 따로 놀았다.
 		local rowW = LAY.COL + LAY.PAD * 2
 		local n = #doms
@@ -2693,6 +2706,10 @@ if ADVISOR_TEST_EXPORTS then
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40
 		gather_threats = gather_threats,                    -- v40: 영토0 앵커 스캔을 스텁으로 검증
+		-- v61: 페이지 분할. 인게임에서 한 번도 실행된 적이 없는 경로다 —
+		--   우리 기기 MAXH=968인데 관측 최대 본문이 866이라 늘 1쪽이었다.
+		--   MAXH는 화면 높이에서 나오므로(rh-176-96) 1080p 사용자는 ~565라 지금도 2쪽이다.
+		paginate = paginate, LAY = LAY,
 		clause = clause, join_clauses = join_clauses,
 		fname = fname, region_disp = region_disp, first_names = first_names,
 		get_profile = get_profile,
