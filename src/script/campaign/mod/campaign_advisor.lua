@@ -2570,6 +2570,44 @@ local function ensure_base()
 	return B
 end
 
+-- ── v67 핫리로드(개발 전용) — 게임 재시작 없이 수정 반영 ─────────────
+--   근거: 커뮤니티 표준 도구 "Execute External Lua File"(prop joe, 워크숍
+--   2791573994, 2025-01 갱신)이 같은 원리로 동작한다 — 캠페인 샌드박스에서
+--   io 읽기 + loadstring 실행이 허용됨을 그 도구의 존재가 증명한다.
+--   우리는 외부 모드·F9 바인딩 없이 어드바이저 렌더(버튼/탭 클릭)를 트리거로 쓴다.
+--   흐름: 이 파일을 저장 → 게임에서 탭 아무거나 클릭 → 즉시 실행 + 캐시 무효화.
+--   전역(CA_DOMAINS·CA_U·CA_BLDQ 등)이 전부 호출 시점 조회라, dev 파일에서
+--   함수를 갈아끼우면 다음 렌더부터 새 코드가 돈다. DEBUG_FILE=false면 완전 무력.
+local DEV_PATH = "C:/Users/veria/tw3_advisor_dev.lua"
+local g_dev_sig, g_dev_waitlog = nil, false
+local function run_dev_script()
+	if not DEBUG_FILE then return end
+	local src = nil
+	pcall(function()
+		if io and io.open then
+			local fh = io.open(DEV_PATH, "r")
+			if fh then src = fh:read("*a"); fh:close() end
+		end
+	end)
+	if type(src) ~= "string" or src == "" then
+		if not g_dev_waitlog then g_dev_waitlog = true; proof("[v67핫리로드] 대기 — " .. DEV_PATH .. " 없음", true) end
+		return
+	end
+	local sig = #src .. ":" .. src:sub(1, 40) .. src:sub(-40)
+	if sig == g_dev_sig then return end                  -- 내용이 안 바뀌었으면 재실행하지 않는다
+	g_dev_sig = sig
+	local loader = loadstring or load
+	if not loader then proof("[v67핫리로드] loadstring/load 없음 — 이 샌드박스에선 사용 불가", true); return end
+	local chunk, err = loader(src, "tw3_advisor_dev")
+	if not chunk then proof("[v67핫리로드] 문법 오류: " .. tostring(err), true); return end
+	local ok2, err2 = pcall(chunk)
+	proof(string.format("[v67핫리로드] 실행 %s (%dB)", ok2 and "OK" or ("실패: " .. tostring(err2)), #src), true)
+	if ok2 then
+		-- 새 코드가 바로 보이도록 이번 턴 캐시를 통째로 비운다(수집부터 다시).
+		pcall(function() g_base.tried = nil; g_base.content, g_base.pages = {}, {} end)
+	end
+end
+
 -- 탭 본문(캐시). 실패는 반드시 눈에 보이게 — 빈 화면으로 위장하지 않는다.
 local function content_for(id)
 	local B = ensure_base()
@@ -2592,6 +2630,7 @@ local function content_for(id)
 end
 
 local function ui_render()
+	run_dev_script()                       -- v67: 개발 파일이 바뀌었으면 여기서 즉시 반영
 	local lines = content_for(g_ui.tab)
 	local textc = panel_text()
 	if not textc then get_panel(); textc = panel_text() end
@@ -2768,6 +2807,8 @@ CA_DOMAINS[#CA_DOMAINS + 1] = {
 if ADVISOR_TEST_EXPORTS then
 	CA_TEST = {
 		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
+		run_dev_script = run_dev_script,                              -- v67 핫리로드
+		set_dev_path = function(p) DEV_PATH = p; g_dev_sig = nil end,
 		num = num, clamp = clamp, sev = sev,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40

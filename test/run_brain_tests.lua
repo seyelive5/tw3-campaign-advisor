@@ -255,6 +255,29 @@ do
 	CA_BLDQ.reset()
 end
 
+-- ══ 0e. 핫리로드 (v67) ═══════════════════════════════════════════════
+-- 게임 재시작 없이 dev 파일을 실행하는 경로. 커뮤니티 도구(prop joe,
+-- Execute External Lua File)와 같은 원리를 내장한 것 — 파일 서명 비교·
+-- 문법 오류 격리·변경 시에만 재실행을 여기서 잠근다.
+log("== 0e. 핫리로드 ==")
+do
+	local p = ROOT .. "/test/_dev_hot.lua"
+	local fh = real_open(p, "w"); fh:write("_G.__hot = (_G.__hot or 0) + 1"); fh:close()
+	T.set_dev_path(p)
+	T.run_dev_script()
+	ok(_G.__hot == 1, "핫리로드: 파일 실행", tostring(_G.__hot))
+	T.run_dev_script()
+	ok(_G.__hot == 1, "핫리로드: 같은 내용은 재실행하지 않음")
+	fh = real_open(p, "w"); fh:write("_G.__hot = _G.__hot + 10"); fh:close()
+	T.run_dev_script()
+	ok(_G.__hot == 11, "핫리로드: 바뀐 내용은 즉시 반영", tostring(_G.__hot))
+	fh = real_open(p, "w"); fh:write("this is not lua ((("); fh:close()
+	local okc = pcall(T.run_dev_script)
+	ok(okc and _G.__hot == 11, "핫리로드: 문법 오류는 삼키고 이전 상태 유지")
+	os.remove(p)
+	_G.__hot = nil
+end
+
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
 log("== 1. 한국어 조사 ==")
 ok(T.has_batchim("제국") == true,  "받침: 제국=true")
