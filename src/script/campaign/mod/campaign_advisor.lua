@@ -1,16 +1,26 @@
 --[[===========================================================================
-  TW3 캠페인 어드바이저 — Phase 2 / 2a (v6: 분석 두뇌 + 조언 생성)
+  TW3 캠페인 어드바이저 — 본체(두뇌 + UI 셸)
   ---------------------------------------------------------------------------
   로더 계약: NewSession 때 top-level 실행 → first tick 때 전역 campaign_advisor().
-  버튼/클릭(Step3/4)은 유지. 클릭 시:
-    상태수집 → 파생지표 → 2축 스코어링(CA 시드) → 다양한 한국어 브리핑 → 파일.
+  버튼 클릭 → 상태수집 → 파생지표 → 스코어링 → 국면 진단 → 다턴 계획 →
+  한국어 산문 + 7탭 패널. 전부 읽기 전용(게임 상태를 바꾸지 않는다).
+
+  화면: 게임 언어가 한국어면 CJK 폰트가 이미 로드돼 있어 **패널에 한글이 그대로
+  렌더된다**(v8 인게임 확인). 툴팁은 요약, 패널은 탭별 본문. 프루프 파일은
+  디버그용이지 유일한 출력이 아니다.
+
+  탭은 CA_DOMAINS 레지스트리로 붙는다(advisor_dom_*.lua가 각자 등록).
+  ※ 로드 순서는 파일명 순이라 advisor_*가 이 파일보다 먼저 뜬다 →
+    도메인이 CA_U/CA_BLD를 잡는 것은 반드시 '호출 시점'에만.
 
   설계 근거(실측, docs/cai_seed_data.md):
-    - 경제축: 예산 default = army 55 / construction 40. rogue80~tombking95 스펙트럼.
-    - 지출규율: 순수입 ~90% 재투자, 흑자 5턴 / 적자 10턴 생존버퍼.
+    - 경제축: 예산 default = army 55 / construction 40 (SEED.army_base/cons_base).
+    - 생존버퍼 5턴 목표(SEED.buffer_target).
     - 전략축: defensive ↔ default ↔ aggressive ↔ opportunistic.
-  범위: 읽기 전용. 화면 텍스트는 영어 툴팁만(한글 글리프 미보장) → 조언은 파일(UTF-8).
-  이 두뇌의 "구조화 결과"는 Phase3에서 LLM에 넘겨 자연어화할 것.
+
+  ※ LLM 브리지는 채택하지 않기로 결정했다(2026-07-23). API 키·동반 프로세스·
+    네트워크가 배포에 과한 진입장벽이라는 사용자 판단. 자연어는 순수 Lua NLG
+    (문구 풀 + 절 병합 + 조사 자동선택)로 낸다.
 =============================================================================]]
 
 local BUTTON_ID       = "advisor_recommend_button"
@@ -25,9 +35,15 @@ local PROOF_PATH = "C:/Users/veria/tw3_advisor_proof.txt"
 -- CA 실측 시드 상수
 local SEED = {
 	army_base = 55, cons_base = 40,   -- default 예산배분(%)
-	reinvest  = 0.9,                  -- 순수입 재투자 비율
 	buffer_target = 5,                -- 흑자시 목표 재정버퍼(턴)
+	-- ※ reinvest(0.9)는 뺐다. 상수만 있고 쓰는 곳이 없었는데 "CA 실측 시드"라는
+	--   제목 아래 있어 재투자율이 적용되는 것처럼 보였다.
 }
+
+-- 스캔 상한(성능). 도달하면 조용히 자르지 말고 S.capped에 남겨 브리핑에 밝힌다 —
+-- 특히 위협 상한에 걸리면 인접 정보가 비어 '무방비'로 오판하고, 그 오판이
+-- 내정 탭의 모병 추천까지 끌고 간다(v59에서 threatened.defended를 물렸다).
+local CAP = { neighbor = 600, threat = 800, province = 50, met = 60 }
 
 -- out()으로 스크립트 로그 기록. DEBUG_FILE일 때만 파일도. 둘 다 pcall 보호.
 local function proof(msg, append)
@@ -200,11 +216,12 @@ end
 -- v40: ok도 반환 — 인접 조회 실패를 "국경 평온"으로 위장하지 않기 위해(수집상태에 기록).
 local function gather_neighbors(f, my_key)
 	local nb = {}
+	local capped = false
 	local ok = pcall(function()
 		local regions = f:region_list(); local rn = regions:num_items()
 		local checks = 0
 		for i = 0, rn - 1 do
-			if checks > 600 then break end
+			if checks > CAP.neighbor then capped = true; break end
 			local reg = regions:item_at(i)
 			local adj = reg:adjacent_region_list(); local an = adj:num_items()
 			for j = 0, an - 1 do
@@ -223,7 +240,7 @@ local function gather_neighbors(f, my_key)
 			end
 		end
 	end)
-	return nb, ok
+	return nb, ok, capped
 end
 
 -- 팩션 강도 근사 = 소유 영토 수 (없으면 nil). 이웃 강약 평가용.
@@ -313,7 +330,7 @@ local function gather_threats(f, war_set, border_enemies, my_key)
 			pcall(function()
 				local adj = reg:adjacent_region_list(); local an = adj:num_items()
 				for j = 0, an - 1 do
-					if checks > 800 then break end
+					if checks > CAP.threat then T.capped = true; break end
 					checks = checks + 1
 					local areg = adj:item_at(j)
 					local anm = areg:name()
@@ -506,8 +523,9 @@ local function gather_province_issues(f, subculture)
 	local skip_corr = subculture and CORR_IGNORE[subculture]
 	PV.ok = pcall(function()
 		local regions = f:region_list(); local rn = regions:num_items()
+		PV.capped = rn > CAP.province
 		local seen, corr_seen = {}, {}
-		for i = 0, math.min(rn, 50) - 1 do
+		for i = 0, math.min(rn, CAP.province) - 1 do
 			local reg = regions:item_at(i)
 			local pn = reg:name(); pcall(function() pn = reg:province_name() end)
 			-- 공공질서
@@ -546,9 +564,11 @@ end
 -- 성장률 추적(히스토리) 없이 정적 '우세' 감지 — 런어웨이 AI 조기 경고.
 local function gather_snowball(f, my_regions)
 	local top = nil
+	local capped = false
 	local ok = pcall(function()
 		local met = f:factions_met(); local n = met:num_items()
-		for i = 0, math.min(n, 60) - 1 do
+		capped = n > CAP.met
+		for i = 0, math.min(n, CAP.met) - 1 do
 			local of = met:item_at(i)
 			if of and not of:is_null_interface() then
 				local allied = false
@@ -561,9 +581,9 @@ local function gather_snowball(f, my_regions)
 			end
 		end
 	end)
-	if not top then return nil, ok end   -- ok=true면 '정말 라이벌 없음', false면 '조회 실패'(v35 구분)
+	if not top then return nil, ok, capped end   -- ok=true면 '정말 라이벌 없음', false면 '조회 실패'(v35 구분)
 	top.dominant = top.regions >= math.max(12, num(my_regions, 0) * 2)   -- 압도적이면 즉시 경고, 아니면 성장률 추적용
-	return top, ok
+	return top, ok, capped
 end
 
 -- ── 상태 수집 (getter마다 개별 pcall) ────────────────────────────────
@@ -594,7 +614,7 @@ local function gather_state()
 	local war_set, war_count, war_ok = key_set(function() return f:factions_at_war_with() end, 60)
 	S.war_count = war_count
 	S.war_set = war_set   -- 전략 2.0: 계획 엔진의 "아직 전쟁 중인가" 판정용
-	local neighbors, nb_ok = gather_neighbors(f, S.faction)
+	local neighbors, nb_ok, nb_cap = gather_neighbors(f, S.faction)
 	S.border_enemies, S.border_others = {}, {}
 	for k in pairs(neighbors) do
 		if war_set[k] then S.border_enemies[#S.border_enemies + 1] = k
@@ -624,8 +644,15 @@ local function gather_state()
 	-- 속주 내부(④): 공공질서 위기
 	S.province = gather_province_issues(f, S.subculture)
 	-- 스노우볼 감시(⑥): 압도적으로 큰 비동맹 세력
-	local sb, sb_ok = gather_snowball(f, S.regions)
+	local sb, sb_ok, sb_cap = gather_snowball(f, S.regions)
 	S.snowball = sb
+	-- 스캔 상한 도달 기록. '실패'(health)와는 다르다 — 읽긴 읽었는데 다 못 읽은 것이다.
+	-- 조용히 자르면 대제국 후반에 "국경 평온·무방비 없음"이 거짓으로 나온다.
+	S.capped = {}
+	if nb_cap then S.capped[#S.capped + 1] = "국경" end
+	if S.threats and S.threats.capped then S.capped[#S.capped + 1] = "위협" end
+	if S.province and S.province.capped then S.capped[#S.capped + 1] = "속주" end
+	if sb_cap then S.capped[#S.capped + 1] = "라이벌" end
 	-- 수집 건강 상태(v35 — 3-상태 분리): '실패'와 '평온'을 구분. 실패 섹션은 조언 보류를 명시.
 	S.health = {}
 	if S.faction == nil then S.health[#S.health + 1] = "핵심 상태" end
@@ -741,7 +768,9 @@ local function analyze(S, prof)
 		end
 	end
 	-- 확장 (선제/영토) — 국경 평온 + 흑자 + 비적대 이웃 존재. 약한 이웃을 표적으로 지목.
-	if immediate == 0 and net > 0 and buffer >= SEED.buffer_target and others > 0 then
+	-- buffer_known 필수: 수입 0이면 buffer가 999 센티넬이라 무일푼에게 "확장 적기"가 나간다.
+	-- v40이 같은 센티넬을 '금고 과다' 문구에서만 막고 이 게이트는 놓쳤다.
+	if immediate == 0 and net > 0 and D.buffer_known and buffer >= SEED.buffer_target and others > 0 then
 		local sc = 35 + ((density >= 1) and 15 or 0)
 		local reason
 		if S.weak_target then
@@ -890,6 +919,9 @@ local function build_briefing(S, D, cand, prof)
 		L[#L+1] = "🔮 투영: " .. table.concat(parts, " · ")
 	end
 	L[#L+1] = "🩺 수집상태: " .. ((S.health and #S.health > 0) and ("실패=" .. table.concat(S.health, ",") .. " — 해당 영역 판단 보류") or "전 섹션 정상")
+	if S.capped and #S.capped > 0 then
+		L[#L+1] = "🔎 스캔 상한 도달: " .. table.concat(S.capped, ",") .. " — 뒤쪽은 못 봤습니다(없는 게 아니라 안 본 것)"
+	end
 	L[#L+1] = "▶ 종합: " .. overall(S, D)
 	do
 		local dg = diagnose(S, D)
@@ -990,10 +1022,9 @@ end
 -- ── 자연어 산문 생성 (v9c) — 문구 풀 회전으로 다양화 ──
 local PROSE_OPEN = { "정세를 보면", "현 상황을 정리하면", "참모의 판단으로는", "전황을 짚어보면", "보고드리자면", "냉정히 보면", "종합하면" }
 local PROSE_MAX  = 13   -- 패널 산문 목표 총량(정보 예산). A+U(계획·국면·정세·긴급)는 열외, N·F부터 탈락.
-local PROSE_CONN = { "한편", "또한", "동시에", "이와 함께", "아울러", "그다음으로" }
-local function urgency(s)
-	if s >= 70 then return "가장 시급합니다" elseif s >= 45 then return "중요합니다" else return "고려할 만합니다" end
-end
+-- ※ PROSE_CONN(접속부사 풀)과 urgency(점수→시급도 문구)는 제거했다. v32에서 산문이
+--   계획 엔진 주도로 바뀌면서 둘 다 호출부가 사라졌는데 선언만 남아 있었다(v40 리뷰에서
+--   지적됐던 것). 문장 접속은 join_clauses가, 우선순위는 계획 단계가 맡는다.
 
 -- ── 절 병합(aggregation, v35 — 문서2 §B·C) ──────────────────────────
 -- 사실들을 한 문장으로: 같은 극성은 병렬(이고→이며 교대), 극성 전환은 딱 한 번 '이나'로 신호.
@@ -2658,7 +2689,7 @@ CA_DOMAINS[#CA_DOMAINS + 1] = {
 if ADVISOR_TEST_EXPORTS then
 	CA_TEST = {
 		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
-		num = num, clamp = clamp, sev = sev, urgency = urgency,
+		num = num, clamp = clamp, sev = sev,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40
 		gather_threats = gather_threats,                    -- v40: 영토0 앵커 스캔을 스텁으로 검증

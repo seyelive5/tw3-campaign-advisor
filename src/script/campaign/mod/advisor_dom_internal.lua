@@ -182,10 +182,14 @@ local function mil_of(S)
 	local T = S and S.threats
 	if type(T) ~= "table" then return m end
 	for _, k in ipairs(T.sieges or {}) do m.siege[k] = true end
+	-- 위협 스캔이 상한에 걸렸으면 인접 정보가 비어 아군이 옆에 있어도 '무방비'로
+	-- 잡힌다. 그 오판으로 진영 전체에 모병을 권하지 않는다 — 포위·위협 사실 자체는
+	-- 그대로 쓰되(그건 직접 읽은 값), 파생 판정인 defended만 신뢰하지 않는다.
+	local trust_def = not T.capped
 	for _, a in ipairs(T.threatened or {}) do
 		if a.region then
 			m.threat[a.region] = true
-			if not a.defended then m.undef = m.undef + 1 end
+			if trust_def and not a.defended then m.undef = m.undef + 1 end
 		end
 	end
 	return m

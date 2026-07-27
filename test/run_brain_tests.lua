@@ -101,6 +101,35 @@ local function run(S, prof)
 	return D, cand, dg, prose, brief, prof
 end
 
+-- ══ 0. 센티넬·스캔상한 (v60 전체 리뷰 후속) ══════════════════════════
+log("== 0. 센티넬·스캔상한 ==")
+do
+	-- 수입 0이면 buffer가 999 센티넬이다. 이걸 '충분'으로 읽으면 무일푼에게
+	-- "국경 평온+흑자, 확장 검토"가 나간다. v40이 금고과다 문구만 막고 이 게이트는 놓쳤다.
+	local Sz = baseS{ income = 0, net = 5, treasury = 3, regions = 2,
+		border_others = { "a_faction", "b_faction" } }
+	local Dz, cz = run(Sz)
+	ok(Dz.buffer_known == false, "센티넬: 수입 0이면 buffer 미상")
+	local has_exp = false
+	for _, c in ipairs(cz) do if c.key == "expansion" then has_exp = true end end
+	ok(not has_exp, "센티넬: 수입 0인데 '확장 적기'를 권하지 않는다")
+	-- 수입이 있고 실제로 여유가 있으면 종전대로 뜬다
+	local Sy = baseS{ income = 100, net = 50, treasury = 2000, regions = 2,
+		border_others = { "a_faction", "b_faction" } }
+	local _, cy = run(Sy)
+	local has_exp2 = false
+	for _, c in ipairs(cy) do if c.key == "expansion" then has_exp2 = true end end
+	ok(has_exp2, "센티넬: 진짜 여유가 있으면 확장 후보는 그대로")
+
+	-- 스캔 상한은 '실패'와 다르다 — 읽긴 읽었는데 다 못 읽은 것이다. 브리핑에 밝힌다.
+	local Sc = baseS{ capped = { "위협", "속주" } }
+	local _, _, _, _, bc = run(Sc)
+	ok(bc:find("스캔 상한 도달", 1, true) ~= nil and bc:find("위협,속주", 1, true) ~= nil,
+		"스캔상한: 브리핑에 밝힌다", bc:match("🔎[^\n]*"))
+	local _, _, _, _, bn = run(baseS{})
+	ok(bn:find("스캔 상한", 1, true) == nil, "스캔상한: 도달 안 했으면 줄 자체가 없다")
+end
+
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
 log("== 1. 한국어 조사 ==")
 ok(T.has_batchim("제국") == true,  "받침: 제국=true")
@@ -1197,6 +1226,15 @@ do
 	ok(m0.siege["wh_main_reg_altdorf"] and m0.threat["wh_main_reg_helmgart"] and m0.undef == 1,
 		"내정: 위협 신호 정리")
 	ok(TI.mil_of(nil).undef == 0 and TI.mil_of({}).undef == 0, "내정: 위협 정보 없으면 조용히 0")
+	-- 위협 스캔이 상한에 걸렸으면 defended는 못 믿는다(인접이 비어 아군이 옆에 있어도
+	-- '무방비'로 잡힌다). 그 오판으로 진영 전체에 모병을 권하면 안 된다.
+	local mcap = TI.mil_of{ threats = { capped = true, sieges = { "wh_main_reg_altdorf" },
+		threatened = { { region = "wh_main_reg_helmgart", defended = false } } } }
+	ok(mcap.undef == 0, "내정: 스캔 상한이면 무방비 판정을 신뢰하지 않는다", tostring(mcap.undef))
+	ok(mcap.siege["wh_main_reg_altdorf"] and mcap.threat["wh_main_reg_helmgart"],
+		"내정: 다만 직접 읽은 포위·위협 사실은 그대로 쓴다")
+	ok(select(1, TI.want_of({ key = "wh_main_reg_other", po = 5, growth = 5 }, {}, mcap)) == "gdp",
+		"내정: 상한 걸린 무방비로는 모병을 권하지 않는다")
 	-- 포위된 지역은 재정 위기보다 방어가 먼저다(그 지역 한정)
 	local rr = { key = "wh_main_reg_altdorf", po = 5, growth = 5 }
 	ok(select(1, TI.want_of(rr, { money_trouble = true }, m0)) == "def",
