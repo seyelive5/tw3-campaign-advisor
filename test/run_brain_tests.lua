@@ -1100,7 +1100,9 @@ do
 	ok(not has(with(mkfac({ reg1, reg2 }, { provinces = 1, complete = 0, tax = 100 }), S1, {}), "세율"),
 		"내정: 세율 100(기본)은 표기하지 않음")
 	ok(has(out1, "GDP 1,240") and has(out1, "치안 -60"), "내정: 지역 수치")
-	ok(has(out1, "(수도)"), "내정: 속주 수도 표시")
+	-- 국가 수도가 아니라 '속주' 수도다. 42턴 실측에서 속주가 둘이라 두 곳에 동시에
+	-- 붙어 국가 수도로 오해될 여지가 있었다.
+	ok(has(out1, "(속주수도)"), "내정: 속주 수도 표시")
 	ok(out1:find("Altdorf", 1, true) < out1:find("Helmgart", 1, true), "내정: GDP 내림차순 정렬")
 	ok(has(out1, "반란 임박"), "내정: 치안 -50 이하 = 반란 임박(기존 임계 재사용)")
 	ok(has(out1, "3/4") and has(out1, "Ubersreik"), "내정: 속주 진행 + 남은 지역 지목")
@@ -1763,8 +1765,13 @@ do
 	with(f1, { subculture = "sc_emp" })
 	ok(CALLS.n <= TT.BUDGET, "연구: has_technology 호출이 예산 이내", CALLS.n .. "/" .. TT.BUDGET)
 
-	-- ⑨ 효과를 못 읽는다는 사실을 밝힌다
-	ok(has(out1, "개별 효과는 읽지 않았습니다"), "연구: 효과 미조회를 명시")
+	-- ⑨ 효과 수치를 못 읽는다는 사실을 밝힌다
+	ok(has(out1, "개별 효과 수치는 읽지 않았습니다"), "연구: 효과 미조회를 명시")
+	-- ⑨-b 기술 이름은 로컬라이즈를 거친다(원시 키를 그대로 뿌리지 않는다).
+	--   v54 인게임 판독에서 `wh3_dlc20_chs_kho_warriors_gift_slot_2`가 그대로 떴다.
+	--   하니스는 common=nil이라 폴백 경로(접두사 제거·밑줄→공백)를 검증한다.
+	ok(TT.tname("wh3_dlc20_chs_kho_warriors_gift_slot_2"):find("_") == nil,
+		"연구: 기술 이름에 원시 키가 그대로 새지 않는다", TT.tname("wh3_dlc20_chs_kho_warriors_gift_slot_2"))
 
 	-- ⑩ 팩션 조회 실패
 	cm.get_local_faction = function() return nil end

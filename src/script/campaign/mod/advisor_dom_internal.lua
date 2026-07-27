@@ -216,12 +216,20 @@ local function label_of(lv, cost, turns, tag, want, purse)
 	else
 		why = CA_BLDQ.tag_ko(tag, 2)
 	end
-	if not why then
-		local u = CA_BLDQ.units(lv)
-		if u and #u > 0 then why = string.format("유닛 %d종", #u) end
+	-- 수치 효과가 없고 유닛만 푸는 건물이 있다(병영 1단계 등). 그럴 땐 무슨 유닛인지
+	-- 이름을 대 준다 — "유닛 2종"보다 "검병 등 2종"이 판단에 쓰인다.
+	local u = CA_BLDQ.units(lv)
+	if u and #u > 0 then
+		local un = U().unit_name
+		local first = un and un(u[1]) or nil
+		local ustr = first and ((#u > 1) and string.format("%s 등 %d종", first, #u) or first)
+		            or string.format("유닛 %d종", #u)
+		why = why and (why .. " · " .. ustr) or ustr
 	end
+	-- 건설 0턴 = 즉시 완공(building_instant_constructions 계열). "0턴"은 오해를 부른다.
+	local when = (turns and turns > 0) and string.format("%d턴", turns) or "즉시"
 	local short = (purse and cost > purse) and " ✗국고부족" or ""
-	return string.format("%s(%s금 %d턴%s)%s", nm, comma(cost), turns, why and (" " .. why) or "", short)
+	return string.format("%s(%s금 %s%s)%s", nm, comma(cost), when, why and (" " .. why) or "", short)
 end
 
 local function build_construction(G, S, D)
@@ -306,8 +314,15 @@ local function build_construction(G, S, D)
 			for j = 1, math.min(#pool, 2) do
 				top[#top + 1] = label_of(pool[j].lv, pool[j].cost, pool[j].turns, pool[j].tag, want, purse)
 			end
-			L[#L + 1] = string.format("• %s 빈칸 %d · %s 우선 → %s%s",
-				rdisp(r.key), #r.free, why, table.concat(top, " · "),
+			-- 필요 계열이 후보에 아예 없으면 "국고 우선"이라 써 놓고 국고와 무관한
+			-- 목록을 내밀게 된다(42턴 실측: 나글파리 평원 후보가 전부 '기타'였다).
+			-- 우선순위를 못 지켰으면 못 지켰다고 말한다.
+			local matched = false
+			for _, c in ipairs(pool) do if has_tag(c.tag, want) then matched = true; break end end
+			local headline = matched and string.format("%s 우선", why)
+			                          or string.format("%s가 급하나 여기엔 없어 싼 순", why)
+			L[#L + 1] = string.format("• %s 빈칸 %d · %s → %s%s",
+				rdisp(r.key), #r.free, headline, table.concat(top, " · "),
 				(#pool > 2) and string.format(" 외 %d", #pool - 2) or "")
 		end
 	end
@@ -418,7 +433,9 @@ local function build(S, B)
 		if r.growth then p[#p + 1] = "성장 " .. signed(r.growth) end
 		if r.dev then p[#p + 1] = "개발P" end
 		if r.siege then p[#p + 1] = "🛡포위중" end
-		L[#L + 1] = string.format("• %s%s %s", rdisp(r.key), r.capital and "(수도)" or "",
+		-- "(수도)"는 국가 수도로 오해된다 — 42턴 실측에서 속주가 둘이라 두 곳에 동시에
+		-- 붙었다. is_province_capital()이 뜻하는 그대로 적는다.
+		L[#L + 1] = string.format("• %s%s %s", rdisp(r.key), r.capital and "(속주수도)" or "",
 			(#p > 0) and table.concat(p, " · ") or "(수치 없음)")
 	end
 	if #rs > 8 then L[#L + 1] = string.format("  … 외 %d곳", #rs - 8) end

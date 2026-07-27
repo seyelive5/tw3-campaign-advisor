@@ -2610,8 +2610,33 @@ local function signed(n)
 	return (v >= 0 and "+" or "") .. comma(v)
 end
 
+-- ── 로컬라이즈 이름 조회 (게임 언어가 한국어면 한글이 온다) ────────────
+--   접두사 규칙은 전부 언어팩 실측(local_kr.pack의 194,564 엔트리 대조):
+--     technologies_onscreen_name_<기술키>      1,863개 — 연결 없이 단순
+--     land_units_onscreen_name_<유닛키>        2,483개 — 우리 해금 유닛 718/766 적중
+--   ※ 건물 이름만 규칙이 다르다(기본키 컬럼 연결) → CA_BLDQ.name이 따로 처리.
+--   실패하면 키를 사람이 읽을 만하게 다듬어 돌려준다. 없는 한글을 지어내지 않는다.
+local g_loc_cache = {}
+local function loc_name(prefix, key)
+	if type(key) ~= "string" or key == "" then return nil end
+	local ck = prefix .. key
+	local hit = g_loc_cache[ck]
+	if hit then return hit end
+	local disp = nil
+	pcall(function()
+		local s = common.get_localised_string(ck)
+		if s and s ~= "" then disp = s end
+	end)
+	if not disp then disp = (key:gsub("^wh%d?_[%w]+_", ""):gsub("_", " ")) end
+	g_loc_cache[ck] = disp
+	return disp
+end
+local function tech_name(k) return loc_name("technologies_onscreen_name_", k) end
+local function unit_name(k) return loc_name("land_units_onscreen_name_", k) end
+
 CA_U = {
 	num = num, clamp = clamp, sev = sev,
+	loc_name = loc_name, tech_name = tech_name, unit_name = unit_name,
 	josa = josa, josa_ro = josa_ro, nro = nro, has_batchim = has_batchim,
 	clause = clause, join_clauses = join_clauses,
 	fname = fname, region_disp = region_disp, province_disp = province_disp,

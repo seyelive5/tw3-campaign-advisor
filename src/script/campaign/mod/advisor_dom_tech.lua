@@ -21,6 +21,11 @@ CA_DOMAINS = CA_DOMAINS or {}
 local function U() return CA_U or {} end
 local function say(msg) local u = U(); if u.proof then pcall(function() u.proof(msg, true) end) end end
 
+-- 기술 한글 이름. 로컬 키 `technologies_onscreen_name_<키>`는 언어팩 실측(1,863개).
+-- v54 판독에서 이 탭이 `wh3_dlc20_chs_kho_warriors_gift_slot_2` 같은 원시 키를
+-- 그대로 뿌리고 있었다 — 한국어 어드바이저인데 읽을 수가 없었다.
+local function tname(k) local u = U(); return (u.tech_name and u.tech_name(k)) or tostring(k) end
+
 -- 계열은 effects.category 실측값 3종이 전부다: campaign / battle / both.
 -- (technologies의 is_civil/is_military는 1869개 '전부' military인 죽은 필드라 안 쓴다.)
 local CAT_KO = { c = "지도 효과", b = "전투 효과", x = "지도+전투" }
@@ -205,7 +210,7 @@ local function build(S, B)
 	local function list_out(arr)
 		for i = 1, math.min(#arr, SHOW) do
 			local e = arr[i]
-			L[#L + 1] = string.format("%d. %s", i, e.k)
+			L[#L + 1] = string.format("%d. %s", i, tname(e.k))
 			L[#L + 1] = string.format("   티어 %s · %s 계열%s", tostring(e.t or "?"),
 				CAT_KO[e.c] or "기타", (e.c == cat) and " ◀ 지금 권하는 계열" or "")
 		end
@@ -264,8 +269,8 @@ local function build(S, B)
 	end
 
 	L[#L + 1] = ""
-	L[#L + 1] = "※ 기술 이름은 게임 내부 키입니다. 개별 효과는 읽지 않았습니다 —"
-	L[#L + 1] = "   계열과 선행조건까지만 말하고, 무엇에 좋은지는 게임 화면에서 확인하세요."
+	L[#L + 1] = "※ 개별 효과 수치는 읽지 않았습니다 — 계열과 선행조건까지만 말하고,"
+	L[#L + 1] = "   무엇에 얼마나 좋은지는 게임 화면에서 확인하세요."
 	return L
 end
 
@@ -274,5 +279,5 @@ CA_DOMAINS[#CA_DOMAINS + 1] = { id = "tech", order = 40, title = "연구", build
 -- 오프라인 하니스용 노출(인게임에선 전역이 nil이라 no-op)
 if ADVISOR_TEST_EXPORTS then
 	CA_TEST_TECH = { build = build, gather = gather, pick_set = pick_set,
-	                 priority = priority, BUDGET = BUDGET, SHOW = SHOW }
+	                 priority = priority, BUDGET = BUDGET, SHOW = SHOW, tname = tname }
 end
