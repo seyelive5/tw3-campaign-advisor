@@ -294,19 +294,33 @@ local fxsum_cache = {}
 local function fx_gdp(level_key)
 	local hit = fxsum_cache[level_key]
 	if hit then return hit end
+	-- v73: 인게임 경로는 사전합산표(advisor_db_building_gdp.lua) 조회뿐이다.
+	-- 런타임에 fx 행을 순회하며 string.find를 돌리는 것이 WH3 패치 Lua를
+	-- 오염시킴이 실측됐다(핫리로드 단계 격리 — 리터럴 ASCII find 20만 회
+	-- 단독으로 root 메서드가 '함수'를 반환하는 오염 재현, 대량 호출 의존).
+	-- 분류 규칙 자체는 생성기(scripts/gen_gdp_summary.lua)가 같은 코드로
+	-- 굽고, 아래 하니스 전용 폴백을 §0d가 계속 검증한다.
+	local d = (CA_BLD_GDP or {})[level_key]
+	if d then
+		local out = { flat = d.f or 0, pct = d.p or 0, skipped = d.s or 0 }
+		fxsum_cache[level_key] = out
+		return out
+	end
 	local out = { flat = 0, pct = 0, skipped = 0 }
-	local FX = CA_BLD_FX
-	for _, r in ipairs((FX and FX[level_key]) or {}) do
-		local e, s = r.e or "", r.s or ""
-		if e:find("economy_gdp", 1, true)
-			and (s == "this_building" or s:find("own", 1, true))
-			and not s:find("force", 1, true) then
-			if not e:find("_mod", 1, true) then
-				out.flat = out.flat + (tonumber(r.v) or 0)
-			elseif e:find("gdp_mod_all", 1, true) then
-				out.pct = out.pct + (tonumber(r.v) or 0)
-			else
-				out.skipped = out.skipped + 1
+	if ADVISOR_TEST_EXPORTS then   -- 하니스 전용 — 인게임에선 표에 없는 키 = 0
+		local FX = CA_BLD_FX
+		for _, r in ipairs((FX and FX[level_key]) or {}) do
+			local e, s = r.e or "", r.s or ""
+			if e:find("economy_gdp", 1, true)
+				and (s == "this_building" or s:find("own", 1, true))
+				and not s:find("force", 1, true) then
+				if not e:find("_mod", 1, true) then
+					out.flat = out.flat + (tonumber(r.v) or 0)
+				elseif e:find("gdp_mod_all", 1, true) then
+					out.pct = out.pct + (tonumber(r.v) or 0)
+				else
+					out.skipped = out.skipped + 1
+				end
 			end
 		end
 	end

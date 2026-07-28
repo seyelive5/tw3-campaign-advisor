@@ -227,16 +227,10 @@ local function tag_rank(tag, want)
 end
 local function has_tag(tag, want) return tag_rank(tag, want) ~= nil end
 
--- v72 격리 실험 2단계: 게이트 전체 끔 = 정상(인게임 판정, 렌더 20회 무결점)
--- → 오염원은 GDP 랭킹 기능 내부로 확정. 이제 반으로 가른다:
---   GDP_CALC = gdp_gain/gdp_delta 호출 + g 부착 + "GDP +N/턴" 라벨 (이번 판 켬)
---   GDP_SORT = 정렬의 gdp 비교 가지 (이번 판 끔 — v64 비교자 그대로)
--- 판정: 비정상이면 계산/라벨 쪽(fx 순회·string.find 경로), 정상이면 정렬 가지.
--- 하니스 set_gdp_rank(v)는 둘 다 함께 켜고 끈다(기능 회귀 검증용).
--- 2단계 판정(인게임): CALC 켬+SORT 끔 = 비정상 → 범인은 계산/라벨 쪽.
--- 3단계는 핫리로드 dev 파일로 게임 안에서 fx 폭풍 단독 실험(빌드는 안정 상태 유지).
-local GDP_CALC = false
-local GDP_SORT = false
+-- v72 격리 실험 결말(전 과정 인게임 실측): 게이트 끔=정상 → 계산만 켬=비정상
+-- → 핫리로드 단계 격리 → 범인 = string.find 대량 호출(리터럴 20만 회 단독 재현).
+-- v73: 합산을 생성 시점(advisor_db_building_gdp.lua)으로 옮겨 인게임 find 0회
+-- → 기능 전체 상시 복원. 게이트는 철거.
 
 -- 추천 점수: 필요 계열에 가까울수록 · 지금 돈이 되면 가산.
 local function score_of(cost, tag, want, purse)
@@ -307,7 +301,7 @@ local function build_construction(G, S, D)
 				                  cost = nv.c or 0, turns = nv.t or 0,
 				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D, mil)),
 				                  -- v65: 이 업그레이드가 실제로 버는 GDP 증가분(fx 표 실값)
-				                  g = GDP_CALC and CA_BLDQ.gdp_delta(lk, nx, r.gdp) or nil }
+				                  g = CA_BLDQ.gdp_delta(lk, nx, r.gdp) }
 			end
 		end
 	end
@@ -348,7 +342,7 @@ local function build_construction(G, S, D)
 				if not seen[c.lv] then
 					seen[c.lv] = true
 					pool[#pool + 1] = { lv = c.lv, cost = c.cost, turns = c.turns, tag = c.tag,
-					                    g = GDP_CALC and CA_BLDQ.gdp_gain(c.lv, r.gdp) or nil }
+					                    g = CA_BLDQ.gdp_gain(c.lv, r.gdp) }
 				end
 			end
 		end
@@ -356,7 +350,7 @@ local function build_construction(G, S, D)
 		--   버는 후보끼리는 회수비(비용÷GDP증가) 오름차순 — 골드↔GDP 환산은 안 하지만
 		--   후보 간 비교에서는 단위가 약분되므로 이 정렬은 실측 위반이 아니다.
 		table.sort(pool, function(a, b)
-			if GDP_SORT and want == "gdp" then
+			if want == "gdp" then
 				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
 				if ga ~= gb then return ga end
 				if ga and gb then
@@ -402,18 +396,21 @@ local function build_construction(G, S, D)
 	if #withfree > 3 then body[#body + 1] = string.format("  … 빈칸 있는 곳 %d곳 더", #withfree - 3) end
 
 	if #ups > 0 then
-		table.sort(ups, function(a, b)
-			-- v65: 수입이 급한 지역의 업그레이드는 GDP 증가/비용으로 비교(빈칸과 동일 규칙)
-			if GDP_SORT and a.want == "gdp" and b.want == "gdp" then
-				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
-				if ga ~= gb then return ga end
-				if ga and gb then
-					local pa, pb = a.cost / a.g, b.cost / b.g
-					if pa ~= pb then return pa < pb end
-				end
+		-- v73(코드리뷰 확정 결함 수정): 예전 비교자는 '둘 다 gdp-want일 때만' 회수비,
+		-- 아니면 원소별 점수로 비교했다 — want 혼합 집합에서 추이성이 깨질 수 있는
+		-- 무효 순서 함수다(Lua 5.1 table.sort 미정의 동작 조건). 원소별 키를 먼저
+		-- 굳혀 사전식 전순서로 비교한다: ①gdp-want이며 실제 버는 후보(회수비 오름차순)
+		-- ②그 외(점수 내림차순) → 비용 → 키. 비교 중 상태·조건 분기 없음.
+		for _, u in ipairs(ups) do
+			if u.want == "gdp" and (u.g or 0) > 0 then
+				u.sk1, u.sk2 = 0, u.cost / u.g
+			else
+				u.sk1, u.sk2 = 1, -score_of(u.cost, u.tag, u.want, purse)
 			end
-			local sa, sb = score_of(a.cost, a.tag, a.want, purse), score_of(b.cost, b.tag, b.want, purse)
-			if sa ~= sb then return sa > sb end
+		end
+		table.sort(ups, function(a, b)
+			if a.sk1 ~= b.sk1 then return a.sk1 < b.sk1 end
+			if a.sk2 ~= b.sk2 then return a.sk2 < b.sk2 end
 			if a.cost ~= b.cost then return a.cost < b.cost end
 			return tostring(a.to) < tostring(b.to)
 		end)
@@ -647,6 +644,5 @@ if ADVISOR_TEST_EXPORTS then
 	CA_TEST_INTERNAL = { build = build, gather = gather, comma = comma, signed = signed,
 	                     build_horde = build_horde, build_construction = build_construction,
 	                     want_of = want_of, has_tag = has_tag, label_of = label_of,
-	                     tag_rank = tag_rank, score_of = score_of, mil_of = mil_of,
-	                     set_gdp_rank = function(v) GDP_CALC, GDP_SORT = v, v end }   -- v72 격리 게이트
+	                     tag_rank = tag_rank, score_of = score_of, mil_of = mil_of }
 end
