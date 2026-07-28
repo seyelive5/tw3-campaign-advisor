@@ -233,7 +233,9 @@ local function has_tag(tag, want) return tag_rank(tag, want) ~= nil end
 --   GDP_SORT = 정렬의 gdp 비교 가지 (이번 판 끔 — v64 비교자 그대로)
 -- 판정: 비정상이면 계산/라벨 쪽(fx 순회·string.find 경로), 정상이면 정렬 가지.
 -- 하니스 set_gdp_rank(v)는 둘 다 함께 켜고 끈다(기능 회귀 검증용).
-local GDP_CALC = true
+-- 2단계 판정(인게임): CALC 켬+SORT 끔 = 비정상 → 범인은 계산/라벨 쪽.
+-- 3단계는 핫리로드 dev 파일로 게임 안에서 fx 폭풍 단독 실험(빌드는 안정 상태 유지).
+local GDP_CALC = false
 local GDP_SORT = false
 
 -- 추천 점수: 필요 계열에 가까울수록 · 지금 돈이 되면 가산.
