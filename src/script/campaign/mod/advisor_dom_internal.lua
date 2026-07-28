@@ -227,6 +227,13 @@ local function tag_rank(tag, want)
 end
 local function has_tag(tag, want) return tag_rank(tag, want) ~= nil end
 
+-- v72 격리 실험: 이분 탐색이 v65 커밋(GDP 랭킹)을 첫 비정상으로 지목했는데,
+-- 그 diff는 순수 Lua뿐이라 어느 조각이 엔진 상태를 오염시키는지 아직 못 가렸다.
+-- 이 게이트를 끄면 수집·정렬·라벨이 v64와 동일 경로가 된다(수치 계산도 안 부름).
+-- 인게임 판정 후: 무혐의면 true로 복귀, 유죄면 조각을 쪼개 재실험.
+-- 하니스는 set_gdp_rank(true)로 켜 기능 회귀를 계속 검증한다.
+local GDP_RANK = false
+
 -- 추천 점수: 필요 계열에 가까울수록 · 지금 돈이 되면 가산.
 local function score_of(cost, tag, want, purse)
 	local r = tag_rank(tag, want)
@@ -296,7 +303,7 @@ local function build_construction(G, S, D)
 				                  cost = nv.c or 0, turns = nv.t or 0,
 				                  tag = CA_BLDQ.tag(nx), want = select(1, want_of(r, D, mil)),
 				                  -- v65: 이 업그레이드가 실제로 버는 GDP 증가분(fx 표 실값)
-				                  g = CA_BLDQ.gdp_delta(lk, nx, r.gdp) }
+				                  g = GDP_RANK and CA_BLDQ.gdp_delta(lk, nx, r.gdp) or nil }
 			end
 		end
 	end
@@ -337,7 +344,7 @@ local function build_construction(G, S, D)
 				if not seen[c.lv] then
 					seen[c.lv] = true
 					pool[#pool + 1] = { lv = c.lv, cost = c.cost, turns = c.turns, tag = c.tag,
-					                    g = CA_BLDQ.gdp_gain(c.lv, r.gdp) }
+					                    g = GDP_RANK and CA_BLDQ.gdp_gain(c.lv, r.gdp) or nil }
 				end
 			end
 		end
@@ -345,7 +352,7 @@ local function build_construction(G, S, D)
 		--   버는 후보끼리는 회수비(비용÷GDP증가) 오름차순 — 골드↔GDP 환산은 안 하지만
 		--   후보 간 비교에서는 단위가 약분되므로 이 정렬은 실측 위반이 아니다.
 		table.sort(pool, function(a, b)
-			if want == "gdp" then
+			if GDP_RANK and want == "gdp" then
 				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
 				if ga ~= gb then return ga end
 				if ga and gb then
@@ -393,7 +400,7 @@ local function build_construction(G, S, D)
 	if #ups > 0 then
 		table.sort(ups, function(a, b)
 			-- v65: 수입이 급한 지역의 업그레이드는 GDP 증가/비용으로 비교(빈칸과 동일 규칙)
-			if a.want == "gdp" and b.want == "gdp" then
+			if GDP_RANK and a.want == "gdp" and b.want == "gdp" then
 				local ga, gb = (a.g or 0) > 0, (b.g or 0) > 0
 				if ga ~= gb then return ga end
 				if ga and gb then
@@ -636,5 +643,6 @@ if ADVISOR_TEST_EXPORTS then
 	CA_TEST_INTERNAL = { build = build, gather = gather, comma = comma, signed = signed,
 	                     build_horde = build_horde, build_construction = build_construction,
 	                     want_of = want_of, has_tag = has_tag, label_of = label_of,
-	                     tag_rank = tag_rank, score_of = score_of, mil_of = mil_of }
+	                     tag_rank = tag_rank, score_of = score_of, mil_of = mil_of,
+	                     set_gdp_rank = function(v) GDP_RANK = v end }   -- v72 격리 게이트
 end
