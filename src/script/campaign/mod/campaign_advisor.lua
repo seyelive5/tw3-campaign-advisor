@@ -2050,7 +2050,9 @@ local function ui_autopsy(tag)
 		for _, nm in ipairs({ BUTTON_ID, PANEL_ID, "advisor_panel_body", "scripted_subtitles" }) do
 			local fb = nil
 			pcall(function() fb = find_uicomponent(root, nm) end)
-			L[#L + 1] = nm .. "=" .. tostring(fb ~= nil)
+			-- find_uicomponent는 실패 시 nil이 아니라 false를 돌려준다(29일 실측 —
+			-- "advisor_panel=true" 거짓 보고의 원인). truthiness로 판정한다.
+			L[#L + 1] = nm .. "=" .. tostring(fb and true or false)
 		end
 		L[#L + 1] = "패널핸들생존=" .. tostring(h_ok(g_h["__panel"]))
 		proof("[v69해부#" .. g_autopsy .. "] " .. table.concat(L, " · "), true)
