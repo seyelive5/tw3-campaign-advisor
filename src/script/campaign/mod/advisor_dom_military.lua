@@ -95,7 +95,7 @@ local function gather(f)
 				local a = { grp = {}, units = 0, combat = 0 }
 				pcall(function()
 					local loc = common.get_localised_string(mf:general_character():get_forename())
-					if loc and loc ~= "" then a.name = loc end
+					if type(loc) == "string" and loc ~= "" then a.name = loc end
 				end)
 				pcall(function() a.str = mf:strength() end)
 				pcall(function() a.upkeep = mf:upkeep() end)

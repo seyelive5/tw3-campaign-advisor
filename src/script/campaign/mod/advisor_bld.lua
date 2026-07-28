@@ -216,8 +216,9 @@ function CA_BLDQ.name(level_key)
 	if v then
 		local suffix = level_key .. (v.c or "") .. (v.s or "") .. (v.f or "")
 		pcall(function()
-			local loc = common.get_localised_string("building_culture_variants_name_" .. suffix)
-			if loc and loc ~= "" then disp = loc end
+			local ck = "building_culture_variants_name_" .. suffix
+			local loc = common.get_localised_string(ck)
+			if type(loc) == "string" and loc ~= "" and loc ~= ck then disp = loc end   -- v71: 키 에코 거부
 		end)
 	end
 	if not disp then

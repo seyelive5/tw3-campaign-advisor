@@ -184,8 +184,11 @@ local function fname(key)
 	local disp = FACTION_NAME[key]
 	if not disp then
 		pcall(function()
-			local loc = common.get_localised_string("factions_screen_name_" .. key)
-			if loc and loc ~= "" then disp = loc end
+			local ck = "factions_screen_name_" .. key
+			local loc = common.get_localised_string(ck)
+			-- v71: 키 에코 거부 — 21:27 실측: 비정상 엔진이 빈 문자열 대신 '요청한
+			-- 키 그대로'를 돌려줘 factions_screen_name_…가 화면까지 새어 나갔다.
+			if type(loc) == "string" and loc ~= "" and loc ~= ck then disp = loc end
 		end)
 	end
 	disp = disp or key
@@ -278,8 +281,9 @@ local function region_disp(key)
 	if c then return c end
 	local disp = nil
 	pcall(function()
-		local loc = common.get_localised_string("regions_onscreen_" .. key)
-		if loc and loc ~= "" then disp = loc end
+		local ck = "regions_onscreen_" .. key
+		local loc = common.get_localised_string(ck)
+		if type(loc) == "string" and loc ~= "" and loc ~= ck then disp = loc end   -- v71: 키 에코 거부
 	end)
 	if not disp then
 		local tail = key:match("([^_]+)$") or key
@@ -298,8 +302,9 @@ local function province_disp(key)
 	if c then return c end
 	local disp = nil
 	pcall(function()
-		local loc = common.get_localised_string("provinces_onscreen_" .. key)
-		if loc and loc ~= "" then disp = loc end
+		local ck = "provinces_onscreen_" .. key
+		local loc = common.get_localised_string(ck)
+		if type(loc) == "string" and loc ~= "" and loc ~= ck then disp = loc end   -- v71: 키 에코 거부
 	end)
 	if not disp then
 		local tail = key:match("([^_]+)$") or key
@@ -1565,8 +1570,10 @@ local function collect_strategic(S)
 						end)
 					end)
 					pcall(function()
+						-- (v71 에코 거부는 우리가 접두사로 조립한 키에만 적용 — 이름 키는
+						-- get_forename()이 주는 것이라 판별 근거가 없어 타입 검사만 한다.)
 						local loc = common.get_localised_string(mf:general_character():get_forename())
-						if loc and loc ~= "" then a.name = loc end
+						if type(loc) == "string" and loc ~= "" then a.name = loc end
 					end)
 					pcall(function() a.str = mf:strength() end)
 					if a.str then ST.my_strength = (ST.my_strength or 0) + a.str end
@@ -1998,8 +2005,11 @@ end
 local g_h = {}                                   -- 이름 → UIComponent 핸들
 local function h_ok(uic)
 	if not uic then return false end
+	-- v71: CurrentState는 v42 인게임 실측 메서드(문자열 반환). 반환 '타입'까지 본다 —
+	-- 21:27 세션 실측: 엔진이 비정상 상태(주입형 모드 의심)로 빠지면 메서드가
+	-- 값 대신 함수를 돌려줬다. 그런 핸들은 조작 불능이므로 죽은 것으로 취급.
 	local alive = false
-	pcall(function() uic:Visible(); alive = true end)
+	pcall(function() alive = (type(uic:CurrentState()) == "string") end)
 	return alive
 end
 local function h_get(name)
@@ -2027,20 +2037,21 @@ local function ui_autopsy(tag)
 		pcall(function() rid = root:Id() end)
 		pcall(function() rn = root:ChildCount() end)
 		L[#L + 1] = "Id=" .. tostring(rid) .. " 자식수=" .. tostring(rn)
-		if type(rn) == "number" then
-			local names = {}
-			for i = 0, math.min(rn, 200) - 1 do
-				local cid = nil
-				pcall(function() cid = UIComponent(root:Find(i)):Id() end)
-				if cid and (tostring(cid):find("advisor", 1, true) or i < 10) then
-					names[#names + 1] = i .. ":" .. tostring(cid)
-				end
-			end
-			L[#L + 1] = "자식표본=" .. table.concat(names, ",")
+		-- v71: 엔진 상태 감정 — 21:27 실측에서 Id()/ChildCount()가 값 대신 '함수'를
+		-- 돌려주는 붕괴가 찍혔다. 반환 타입을 그대로 기록해 붕괴 여부를 즉독한다.
+		-- (root:Find(숫자) 자식 순회는 미검증 API 짐작이었으므로 제거 — 실측 원칙.)
+		local dw = nil
+		pcall(function() dw = root:Dimensions() end)
+		local lc = nil
+		pcall(function() lc = common.get_localised_string("factions_screen_name_wh_main_emp_empire") end)
+		L[#L + 1] = string.format("타입감정: Id=%s ChildCount=%s Dimensions=%s loc=%s%s",
+			type(rid), type(rn), type(dw), type(lc),
+			(type(lc) == "string") and (" loc값=" .. lc) or "")
+		for _, nm in ipairs({ BUTTON_ID, PANEL_ID, "advisor_panel_body", "scripted_subtitles" }) do
+			local fb = nil
+			pcall(function() fb = find_uicomponent(root, nm) end)
+			L[#L + 1] = nm .. "=" .. tostring(fb ~= nil)
 		end
-		local fb = nil
-		pcall(function() fb = find_uicomponent(root, BUTTON_ID) end)
-		L[#L + 1] = "버튼find=" .. tostring(fb ~= nil)
 		L[#L + 1] = "패널핸들생존=" .. tostring(h_ok(g_h["__panel"]))
 		proof("[v69해부#" .. g_autopsy .. "] " .. table.concat(L, " · "), true)
 	end)
@@ -2053,6 +2064,7 @@ local function get_panel()
 	pcall(function()
 		local root = core:get_ui_root()
 		panel = find_uicomponent(root, panel_name())
+		local created = false
 		if not panel then
 			ui_autopsy("패널 검색 실패")
 			if g_panel_fails >= 4 then return end        -- 이번 세션은 포기 — 재시도 폭풍 금지
@@ -2060,6 +2072,7 @@ local function get_panel()
 			local addr = root:CreateComponent(nm, PANEL_TEMPLATE)
 			if addr then
 				panel = UIComponent(addr)
+				created = true
 				proof("v68 패널 생성 " .. nm .. " (자체 템플릿)", true)
 			else
 				g_panel_fails = g_panel_fails + 1
@@ -2073,15 +2086,17 @@ local function get_panel()
 		-- 자식도 지금(핸들이 확실히 유효한 순간) 붙잡는다 — 이후 root 불요.
 		pcall(function() g_h["__panel_text"] = find_uicomponent(panel, "text_child") end)
 		pcall(function() g_h["__panel_bg"] = find_uicomponent(panel, "frame_black") end)
-		-- v70(리뷰 R1): 패널 무해화. 템플릿 body는 화면 하단 중앙(1280×128, 유닛 카드
-		-- 영역)에 도킹된 컨테이너인데 v68부터 세션 내내 존재한다 — 히트테스트에
-		-- 걸리면 그 밑 게임 HUD 클릭을 삼킬 수 있다("다른 기능이 안 된다"의 유력
-		-- 후보). 셋 다 입력을 받지 않게 하고, body는 숨김으로 시작한다
-		-- (panel_draw가 켜고 panel_hide가 끈다 — body가 마스터 스위치).
-		pcall(function() panel:SetInteractive(false) end)
-		pcall(function() if g_h["__panel_text"] then g_h["__panel_text"]:SetInteractive(false) end end)
-		pcall(function() if g_h["__panel_bg"] then g_h["__panel_bg"]:SetInteractive(false) end end)
-		pcall(function() panel:SetVisible(false) end)
+		-- v70(리뷰 R1)→v71 정정: 무해화(입력 차단 + 숨김 시작)는 '생성 직후 1회'만.
+		-- v70은 이 블록을 재획득(find) 경로에도 태워서, 핸들 검증이 한 번이라도
+		-- 빗나가면 그리는 도중에도 패널을 도로 숨길 수 있었다 — 내가 심은 회귀.
+		-- 재획득은 상태를 건드리지 않는다. (body가 하단 중앙 도킹 컨테이너라
+		-- 입력 차단 + 닫힘 중 숨김이 필요하다는 R1 자체는 유효하다.)
+		if created then
+			pcall(function() panel:SetInteractive(false) end)
+			pcall(function() if g_h["__panel_text"] then g_h["__panel_text"]:SetInteractive(false) end end)
+			pcall(function() if g_h["__panel_bg"] then g_h["__panel_bg"]:SetInteractive(false) end end)
+			pcall(function() panel:SetVisible(false) end)
+		end
 	end)
 	return panel
 end
@@ -2174,15 +2189,17 @@ local function panel_draw(text)
 	pcall(function()
 		local p = get_panel()
 		if not p then return end
-		pcall(function() p:SetVisible(true) end)     -- v70: body는 닫힘 동안 꺼져 있다
 		local textc = panel_text()
 		if not textc then proof("v41 !!! text_child 못찾음", true); return end
 		-- v69: 배경도 핸들 우선 — root 검색이 죽어도 그린다.
 		local bg = h_ok(g_h["__panel_bg"]) and g_h["__panel_bg"] or nil
 		if not bg then
-			pcall(function() bg = find_uicomponent(get_panel(), "frame_black") end)
+			pcall(function() bg = find_uicomponent(p, "frame_black") end)
 			g_h["__panel_bg"] = bg
 		end
+		-- v71: body 켜기는 모든 획득이 끝난 다음에 — 중간의 get_panel 재호출이
+		-- 상태를 되돌릴 여지를 없앤다(v70 회귀 재발 방지).
+		pcall(function() p:SetVisible(true) end)
 		pcall(function() textc:SetTextHAlign("left") end)
 		pcall(function() textc:SetOpacity(255) end)
 		local box_h = measure(textc, text) or 600    -- 측정 실패 폴백(넉넉히 — 잘리는 것보다 큰 게 낫다)
@@ -2912,7 +2929,7 @@ local function loc_name(prefix, key)
 	local disp = nil
 	pcall(function()
 		local s = common.get_localised_string(ck)
-		if s and s ~= "" then disp = s end
+		if type(s) == "string" and s ~= "" and s ~= ck then disp = s end   -- v71: 키 에코 거부
 	end)
 	if not disp then disp = (key:gsub("^wh%d?_[%w]+_", ""):gsub("_", " ")) end
 	g_loc_cache[ck] = disp

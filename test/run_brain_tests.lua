@@ -311,8 +311,9 @@ end
 log("== 0g. 핸들 레지스트리 ==")
 do
 	T.panel_reset()
-	local fake_text = { Visible = function() return true end }
-	local fake = { Visible = function() return true end }
+	-- 핸들 생존 검사는 CurrentState(v42 인게임 실측 메서드, 문자열 반환)를 쓴다.
+	local fake_text = { CurrentState = function() return "NewState" end }
+	local fake = { CurrentState = function() return "NewState" end }
 	T.panel_seed("__panel", fake)
 	T.panel_seed("__panel_text", fake_text)
 	core, find_uicomponent = nil, nil                -- root 검색이 완전히 죽은 상황
@@ -320,8 +321,13 @@ do
 	ok(T.panel_text() == fake_text, "핸들: root 없이 text_child 핸들 반환")
 	-- 죽은 핸들(메서드 호출이 던짐)은 걸러져 nil 경로로 빠져야 한다.
 	T.panel_reset()
-	T.panel_seed("__panel", { Visible = function() error("dead") end })
+	T.panel_seed("__panel", { CurrentState = function() error("dead") end })
 	ok(T.get_panel() == nil, "핸들: 죽은 핸들은 반환하지 않는다(검증 후 폐기)")
+	-- v71: 21:27 세션 실측 — 비정상 엔진은 메서드가 값 대신 '함수'를 돌려준다.
+	-- 그런 붕괴 핸들도 죽은 것으로 취급해야 한다(타입 검사).
+	T.panel_reset()
+	T.panel_seed("__panel", { CurrentState = function() return function() end end })
+	ok(T.get_panel() == nil, "핸들: 값 대신 함수를 돌려주는 붕괴 핸들도 폐기")
 	T.panel_reset()
 end
 
@@ -333,7 +339,7 @@ log("== 0h. 무해화·버튼 상한 ==")
 do
 	T.panel_reset()
 	local vis = {}
-	local body = { Visible = function() return true end,
+	local body = { CurrentState = function() return "NewState" end,
 	               SetVisible = function(self, v) vis[#vis + 1] = v end }
 	T.panel_seed("__panel", body)
 	core, find_uicomponent = nil, nil
@@ -351,6 +357,21 @@ do
 	ok(calls == at8 and at8 > 0, "버튼: 실패 8회 후 생성 시도 중단", at8 .. "→" .. tostring(calls))
 	core, find_uicomponent = nil, nil
 	T.panel_reset()
+end
+
+-- ══ 0i. 로컬라이즈 키 에코 거부 (v71) ════════════════════════════════
+-- 21:27 세션 실측: 비정상 엔진은 get_localised_string이 빈 문자열 대신
+-- '요청한 키 그대로'를 돌려준다 — 그대로 두면 factions_screen_name_…가
+-- 화면(참모 브리핑 산문)까지 새어 나간다. 에코는 실패로 취급해 폴백을 쓴다.
+log("== 0i. 키 에코 거부 ==")
+do
+	local saved_common = common
+	common = { get_localised_string = function(k) return k end }   -- 에코 엔진 모사
+	local f = T.fname("wh_dlc08_nor_norsca_v71test")
+	ok(f:find("factions_screen_name_", 1, true) == nil, "에코: fname이 로컬 키를 새지 않는다", f)
+	local r = T.region_disp("wh3_main_combi_region_echo_v71test")
+	ok(r:find("regions_onscreen_", 1, true) == nil, "에코: region_disp가 로컬 키를 새지 않는다", r)
+	common = saved_common
 end
 
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════

@@ -69,7 +69,7 @@ local function gather(f, my_key)
 					local nm = nil
 					pcall(function()
 						local loc = common.get_localised_string(ch:get_forename())
-						if loc and loc ~= "" then nm = loc end
+						if type(loc) == "string" and loc ~= "" then nm = loc end
 					end)
 					nm = nm or "이름 미상"
 					local hurt = nil
