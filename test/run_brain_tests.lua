@@ -274,8 +274,33 @@ do
 	fh = real_open(p, "w"); fh:write("this is not lua ((("); fh:close()
 	local okc = pcall(T.run_dev_script)
 	ok(okc and _G.__hot == 11, "핫리로드: 문법 오류는 삼키고 이전 상태 유지")
+	-- v68: dev 청크가 모드 전역(CA_U 등)을 봐야 한다. 인게임에선 CA 로더의 공유
+	-- 환경 때문에 setfenv 없이는 nil이었다(28일 실측). 하니스에선 환경이 _G라
+	-- 자연 통과하지만, export가 깨지는 회귀는 여기서 걸린다 — 환경 전달 자체의
+	-- 최종 검증은 인게임 프루프("[v67핫리로드] 실행 OK")다.
+	fh = real_open(p, "w"); fh:write("_G.__hot_ca = (CA_U ~= nil)"); fh:close()
+	T.run_dev_script()
+	ok(_G.__hot_ca == true, "핫리로드: dev 청크에서 모드 전역(CA_U)이 보인다")
 	os.remove(p)
-	_G.__hot = nil
+	_G.__hot, _G.__hot_ca = nil, nil
+end
+
+-- ══ 0f. 패널 생성 폭풍 상한 (v68) ════════════════════════════════════
+-- 28일 19:55 CTD 재발 방지: 프루프가 '패널 생성 실패 g55' 직후 끊겼다 —
+-- 생성이 계속 실패해도 시도는 세션당 4회로 끝나야 하고, 그 뒤 호출은
+-- 엔진(CreateComponent)을 아예 건드리지 않아야 한다.
+log("== 0f. 패널 상한 ==")
+do
+	local calls = 0
+	core = { get_ui_root = function()
+		return { CreateComponent = function() calls = calls + 1; return nil end }
+	end }
+	find_uicomponent = function() return nil end
+	T.panel_reset()
+	for _ = 1, 10 do T.get_panel() end
+	ok(calls == 4, "패널: 생성 실패는 세션당 4회로 중단(재시도 폭풍 금지)", tostring(calls))
+	core, find_uicomponent = nil, nil
+	T.panel_reset()
 end
 
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════

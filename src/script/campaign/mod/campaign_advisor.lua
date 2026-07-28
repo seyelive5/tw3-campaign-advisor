@@ -1966,11 +1966,21 @@ local LAY = { X = 24, Y = 176, COL = 520, PAD = 18, MAXH = 720, TABH = 30, TABW 
 local g_ui = { open = false, tab = nil, page = 1, npages = 1, built = false, tmpl = nil, tabs = {},
                sink = nil, sel = nil, state0 = nil, boxh = 0 }
 
--- v66: 패널 유실 대응(28일 03:04 세션 실측). 첫 클릭에서 정상 생성·표시된 패널이
--- 두 번째 렌더부터 find로 잡히지 않았고(게임이 자막 컴포넌트를 수거한 것으로 보임),
--- 같은 id로의 CreateComponent가 그 뒤 전부 nil을 돌려줬다(잔존 id 충돌 추정) —
--- 그래서 화면 전체가 "안 되는" 것으로 보였다. id에 세대 번호를 붙여 재생성한다.
-local g_panel_gen = 0
+-- v68: 패널 숙주 교체(28일 19:55 CTD 실측 대응). v66의 세대 재생성은 오진이었다 —
+-- 프루프상 '어떤 새 이름으로도' CreateComponent가 전부 nil(g55까지). 이름 충돌이
+-- 아니라, 게임 자막 시스템이 소유한 템플릿(scripted_subtitles)을 빌려 쓴 것이
+-- 문제다: 자막 시스템이 자기 컴포넌트를 수거한 뒤에는 그 템플릿의 생성 경로
+-- 자체가 죽고, 거기에 클릭마다 8회씩 재시도 폭풍을 돌리다 프로세스가 죽었다
+-- (프루프가 g55 실패 직후 끊김 + 같은 날 crash_report 2건, 전 프레임 엔진 내부).
+-- 대응 3겹:
+--   ① 템플릿을 ui3.pack에서 추출해 우리 pack에 사본으로 실었다(ui/advisor/…,
+--      내부 id도 개명) — 어떤 게임 시스템도 소유하지 않으므로 수거·생성불능이
+--      원리적으로 사라진다. 구조(text_child/frame_black)는 동일해 그리기 코드 불변.
+--   ② 생성 실패는 세션당 4회로 끝 — 실패해도 폭풍은 없다.
+--   ③ RegisterTopMost 제거 — 수거된 컴포넌트가 topmost 목록에 남으면 그 자체가
+--      해제후사용(CTD) 후보다. z순서는 템플릿의 priority=1000이 담당한다(인게임 확인 항목).
+local PANEL_TEMPLATE = "ui/advisor/advisor_panel.twui.xml"
+local g_panel_gen, g_panel_fails = 0, 0
 local function panel_name()
 	return (g_panel_gen == 0) and PANEL_ID or (PANEL_ID .. "_g" .. g_panel_gen)
 end
@@ -1981,20 +1991,18 @@ local function get_panel()
 		local root = core:get_ui_root()
 		panel = find_uicomponent(root, panel_name())
 		if panel then return end
-		for _ = 1, 4 do
-			local nm = panel_name()
-			local addr = root:CreateComponent(nm, "UI/Common UI/scripted_subtitles.twui.xml")
-			if addr then
-				panel = UIComponent(addr)
-				proof("v66 패널 생성 " .. nm, true)
-				-- topmost 등록은 생성 시 1회만. (그리기마다 반복할 이유가 없고,
-				-- 유실-재생성 루프에서 매번 건드리는 변수를 줄인다.)
-				pcall(function() panel:RegisterTopMost() end)
-				return
-			end
-			proof("v66 !!! 패널 생성 실패 " .. nm .. " — 다음 세대로 재시도", true)
-			g_panel_gen = g_panel_gen + 1
+		if g_panel_fails >= 4 then return end            -- 이번 세션은 포기 — 재시도 폭풍 금지
+		local nm = panel_name()
+		local addr = root:CreateComponent(nm, PANEL_TEMPLATE)
+		if addr then
+			panel = UIComponent(addr)
+			proof("v68 패널 생성 " .. nm .. " (자체 템플릿)", true)
+			return
 		end
+		g_panel_fails = g_panel_fails + 1
+		g_panel_gen = g_panel_gen + 1
+		proof(string.format("v68 !!! 패널 생성 실패 %s (%d/4)%s", nm, g_panel_fails,
+			(g_panel_fails >= 4) and " — 이번 세션은 패널 생성을 중단합니다" or ""), true)
 	end)
 	return panel
 end
@@ -2416,23 +2424,29 @@ local function gather_resource(prof)
 end
 
 -- ── v36 실측 프로브(DEBUG 전용) — CAI 스탠스·예산 API ────────────────
--- v66 좌표 프로브(J2 선행) — 실거리 모델에 쓸 좌표계의 단위·규모 실측.
---   logical_position은 tw_autogen 실존(설정: 사냥 1호에서 확인). 수도와 군주의
---   좌표, 그 차이의 제곱합을 찍는다. 다음 실행 프루프가 단위를 알려 준다.
+-- v68 좌표 프로브(J2 선행) — 실거리 모델에 쓸 좌표계의 단위·규모 실측.
+--   v66은 logical_position()을 불렀는데 그 이름은 settlement/character에 없다 —
+--   tw_autogen 실측: 두 인터페이스 모두 logical_position_x()/logical_position_y()
+--   분리형이다(묶음 반환은 PENDING_BATTLE·ROUTE_NODE에만 있음). 그래서 (nil,nil).
 local function probe_geo_v66(f)
 	pcall(function()
 		local hx, hy, cx, cy
 		pcall(function()
 			local hr = f:home_region()
-			if hr and not hr:is_null_interface() then hx, hy = hr:settlement():logical_position() end
+			if hr and not hr:is_null_interface() then
+				local st = hr:settlement()
+				hx, hy = st:logical_position_x(), st:logical_position_y()
+			end
 		end)
 		pcall(function()
 			local ch = f:faction_leader()
-			if ch and not ch:is_null_interface() then cx, cy = ch:logical_position() end
+			if ch and not ch:is_null_interface() then
+				cx, cy = ch:logical_position_x(), ch:logical_position_y()
+			end
 		end)
 		local d2 = nil
 		if hx and cx then d2 = (hx - cx) * (hx - cx) + (hy - cy) * (hy - cy) end
-		proof(string.format("[v66좌표] 수도=(%s,%s) 군주=(%s,%s) d2=%s",
+		proof(string.format("[v68좌표] 수도=(%s,%s) 군주=(%s,%s) d2=%s",
 			tostring(hx), tostring(hy), tostring(cx), tostring(cy), tostring(d2)), true)
 	end)
 end
@@ -2600,6 +2614,11 @@ local function run_dev_script()
 	if not loader then proof("[v67핫리로드] loadstring/load 없음 — 이 샌드박스에선 사용 불가", true); return end
 	local chunk, err = loader(src, "tw3_advisor_dev")
 	if not chunk then proof("[v67핫리로드] 문법 오류: " .. tostring(err), true); return end
+	-- v68: CA 로더는 모드 파일들을 공유 환경에서 실행한다 — 이 파일의 'CA_U = {…}' 같은
+	-- 전역 대입은 그 환경에 쓰이고, loadstring 청크가 기본으로 받는 _G에는 없다
+	-- (28일 실측: dev 파일에서 "attempt to index global 'CA_U' (a nil value)").
+	-- 이 파일의 환경을 청크에 물려줘 dev 파일이 우리가 보는 전역을 그대로 보게 한다.
+	if setfenv and getfenv then pcall(function() setfenv(chunk, getfenv(run_dev_script)) end) end
 	local ok2, err2 = pcall(chunk)
 	proof(string.format("[v67핫리로드] 실행 %s (%dB)", ok2 and "OK" or ("실패: " .. tostring(err2)), #src), true)
 	if ok2 then
@@ -2731,6 +2750,9 @@ function campaign_advisor()
 	g_done = true
 	register_click_listener()
 	create_advisor_button()
+	-- v68: 패널을 세션 초기(엔진이 확실히 안정한 시점)에 미리 만들어 숨겨 둔다.
+	-- 클릭 시점 생성은 게임 상태에 따라 실패할 수 있음이 실측됐다(v66 세션).
+	pcall(function() if get_panel() then panel_hide() end end)
 	proof("2a campaign_advisor() 준비 완료 — 버튼 클릭 시 전략 브리핑 생성.", true)
 end
 
@@ -2809,6 +2831,9 @@ if ADVISOR_TEST_EXPORTS then
 		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
 		run_dev_script = run_dev_script,                              -- v67 핫리로드
 		set_dev_path = function(p) DEV_PATH = p; g_dev_sig = nil end,
+		-- v68: 패널 생성 폭풍 상한 검증(19:55 CTD 재발 방지 테스트용)
+		get_panel = get_panel,
+		panel_reset = function() g_panel_gen, g_panel_fails = 0, 0 end,
 		num = num, clamp = clamp, sev = sev,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40

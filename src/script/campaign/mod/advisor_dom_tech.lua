@@ -109,8 +109,20 @@ local function gather_cco(f, G, byk)
 		end
 		if oid then break end
 	end
+	if not oid then
+		-- v68 대조군: 6조합 전멸(28일 19:55 실측)이 '필드 문제'인지 '배관 문제'인지
+		-- 가른다. AncillaryList.Size는 바닐라가 같은 모양(cqi)으로 실전 사용하는
+		-- 표현식(wh_campaign_interventions:20739), TechnologyResearchPoints는 문서상
+		-- CcoCampaignFaction의 원시형(Int) 필드다. 대조군이 되는데 TechnologyList만
+		-- 안 되면 리스트/필드 쪽, 대조군까지 nil이면 호출 배관 쪽 — 다음 프루프가 판정.
+		if type(cqi) == "number" then
+			tried[#tried + 1] = "대조군AncillaryList.Size=" .. tostring(cco_get(cqi, "AncillaryList.Size"))
+			tried[#tried + 1] = "대조군TechnologyResearchPoints=" .. tostring(cco_get(cqi, "TechnologyResearchPoints"))
+		end
+		G.cco_try = table.concat(tried, " · ")
+		return false
+	end
 	G.cco_try = table.concat(tried, " · ")
-	if not oid then return false end
 	G.cco_n, G.cco_pat = n, pat
 
 	-- 키 접근자도 첫 항목에서 한 번만 변형 시도 후 고정(항목마다 3배 호출 방지).
@@ -257,7 +269,7 @@ local function build(S, B)
 			tostring(G.cco_n), tostring(G.cco_pat), tostring(G.cco_key_src),
 			G.cco_capped and " (상한 도달)" or ""))
 	elseif G.cco_try then
-		say("[v66CCO시도] 전부 실패 — " .. G.cco_try)
+		say("[v68CCO시도] 전부 실패 — " .. G.cco_try)
 	end
 	if G.avail and #G.avail > 0 then
 		local ks = {}
