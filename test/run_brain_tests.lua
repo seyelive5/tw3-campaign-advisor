@@ -303,6 +303,28 @@ do
 	T.panel_reset()
 end
 
+-- ══ 0g. 핸들 레지스트리 (v69) ════════════════════════════════════════
+-- 28일 저녁 실측: root 경유 검색(find/Create)이 세션 중간에 일제히 죽어도
+-- 화면의 컴포넌트는 살아 있었다(패널이 떠 있는데 못 닫음). 그래서 조작은
+-- 검색이 아니라 '만들 때 잡아둔 핸들'로 한다 — root가 완전히 없어도(core=nil)
+-- 핸들만으로 패널·본문을 찾아야 한다.
+log("== 0g. 핸들 레지스트리 ==")
+do
+	T.panel_reset()
+	local fake_text = { Visible = function() return true end }
+	local fake = { Visible = function() return true end }
+	T.panel_seed("__panel", fake)
+	T.panel_seed("__panel_text", fake_text)
+	core, find_uicomponent = nil, nil                -- root 검색이 완전히 죽은 상황
+	ok(T.get_panel() == fake, "핸들: root 없이 패널 핸들 반환")
+	ok(T.panel_text() == fake_text, "핸들: root 없이 text_child 핸들 반환")
+	-- 죽은 핸들(메서드 호출이 던짐)은 걸러져 nil 경로로 빠져야 한다.
+	T.panel_reset()
+	T.panel_seed("__panel", { Visible = function() error("dead") end })
+	ok(T.get_panel() == nil, "핸들: 죽은 핸들은 반환하지 않는다(검증 후 폐기)")
+	T.panel_reset()
+end
+
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
 log("== 1. 한국어 조사 ==")
 ok(T.has_batchim("제국") == true,  "받침: 제국=true")

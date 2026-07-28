@@ -84,8 +84,10 @@ local CCO_CAP = 400          -- 기술 목록 순회 상한(팩션당 보통 50~
 -- (id 2종 × 표현식 3종)을 순서대로 시도하고, 결과를 프루프에 남긴다.
 local function cco_get(oid, expr)
 	local v = nil
-	pcall(function() v = common.get_context_value("CcoCampaignFaction", oid, expr) end)
-	return v
+	-- v69: 오류와 nil-반환을 구분해 돌려준다 — "전부 nil"이 '조용한 미지원'인지
+	-- '호출 자체가 던지는 오류'인지가 진단의 갈림길이다(28일 대조군까지 전멸).
+	local okc, cerr = pcall(function() v = common.get_context_value("CcoCampaignFaction", oid, expr) end)
+	return v, okc, cerr
 end
 
 local function gather_cco(f, G, byk)
@@ -102,9 +104,10 @@ local function gather_cco(f, G, byk)
 	local tried = {}
 	for _, o in ipairs(OIDS) do
 		for _, p in ipairs(PATS) do
-			local v = cco_get(o, p .. ".Size")
-			tried[#tried + 1] = string.format("%s|%s=%s",
-				(type(o) == "number") and "cqi" or "키", p, tostring(v))
+			local v, okc, cerr = cco_get(o, p .. ".Size")
+			tried[#tried + 1] = string.format("%s|%s=%s%s",
+				(type(o) == "number") and "cqi" or "키", p, tostring(v),
+				okc and "" or ("(오류:" .. tostring(cerr) .. ")"))
 			if type(v) == "number" and v > 0 then oid, pat, n = o, p, v; break end
 		end
 		if oid then break end
@@ -116,8 +119,14 @@ local function gather_cco(f, G, byk)
 		-- CcoCampaignFaction의 원시형(Int) 필드다. 대조군이 되는데 TechnologyList만
 		-- 안 되면 리스트/필드 쪽, 대조군까지 nil이면 호출 배관 쪽 — 다음 프루프가 판정.
 		if type(cqi) == "number" then
-			tried[#tried + 1] = "대조군AncillaryList.Size=" .. tostring(cco_get(cqi, "AncillaryList.Size"))
-			tried[#tried + 1] = "대조군TechnologyResearchPoints=" .. tostring(cco_get(cqi, "TechnologyResearchPoints"))
+			local c1, ok1, e1 = cco_get(cqi, "AncillaryList.Size")
+			local c2, ok2, e2 = cco_get(cqi, "TechnologyResearchPoints")
+			tried[#tried + 1] = "대조군AncillaryList.Size=" .. tostring(c1)
+				.. (ok1 and "" or ("(오류:" .. tostring(e1) .. ")"))
+			tried[#tried + 1] = "대조군TechnologyResearchPoints=" .. tostring(c2)
+				.. (ok2 and "" or ("(오류:" .. tostring(e2) .. ")"))
+			tried[#tried + 1] = "gcv=" .. tostring(type(common and common.get_context_value))
+				.. " cqi=" .. tostring(cqi)
 		end
 		G.cco_try = table.concat(tried, " · ")
 		return false

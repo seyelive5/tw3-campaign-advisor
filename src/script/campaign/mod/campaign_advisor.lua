@@ -1985,31 +1985,107 @@ local function panel_name()
 	return (g_panel_gen == 0) and PANEL_ID or (PANEL_ID .. "_g" .. g_panel_gen)
 end
 
+-- v69: 핸들 레지스트리 — 검색이 아니라 핸들로 조작한다.
+-- 28일 저녁 세션 실측: 클릭 리스너는 계속 살아 있는데(수집 프로브 전부 실행)
+-- find_uicomponent/CreateComponent만 두 번째 렌더부터 일제히 nil, 그 와중에
+-- 화면의 패널은 멀쩡히 떠서 닫히지도 않았다. 컴포넌트가 죽는 게 아니라
+-- 'root 경유 검색'이 죽는 것이다 — core.ui_root는 UICreated 때 캐시된 래퍼다
+-- (바닐라 lib_core.lua:308). 그래서 v66 "게임이 패널을 수거"도 v68 "자막 시스템이
+-- 수거"도 반쪽 진단이었다: 자체 템플릿은 유효한 개선(생성 경로 독립)이지만,
+-- 검색이 죽으면 그 패널도 다시 못 찾는다.
+-- 원칙: 만들 때 핸들을 붙잡고, 이후 모든 조작(그리기·숨기기·탭 표시)은 핸들로
+-- 한다. root는 '만드는 순간'에만 쓴다(세션 초기 = 검증된 안정 시점).
+local g_h = {}                                   -- 이름 → UIComponent 핸들
+local function h_ok(uic)
+	if not uic then return false end
+	local alive = false
+	pcall(function() uic:Visible(); alive = true end)
+	return alive
+end
+local function h_get(name)
+	local u = g_h[name]
+	if h_ok(u) then return u end
+	g_h[name] = nil
+	local found = nil
+	pcall(function() found = find_uicomponent(core:get_ui_root(), name) end)
+	if found then g_h[name] = found end
+	return found
+end
+
+-- 검색 사망 순간의 해부(세션당 2회, DEBUG 전용) — root 래퍼가 살아 있는지,
+-- root 자식 목록에 우리 컴포넌트가 어떤 이름으로 있는지를 그 자리에서 찍는다.
+-- 다음 프루프가 "root 무효"인지 "이름 변경"인지 "진짜 소멸"인지를 판정해 준다.
+local g_autopsy = 0
+local function ui_autopsy(tag)
+	if not DEBUG_FILE or g_autopsy >= 2 then return end
+	g_autopsy = g_autopsy + 1
+	pcall(function()
+		local L = { tag }
+		local root = core:get_ui_root()
+		L[#L + 1] = "root=" .. tostring(root)
+		local rid, rn = nil, nil
+		pcall(function() rid = root:Id() end)
+		pcall(function() rn = root:ChildCount() end)
+		L[#L + 1] = "Id=" .. tostring(rid) .. " 자식수=" .. tostring(rn)
+		if type(rn) == "number" then
+			local names = {}
+			for i = 0, math.min(rn, 200) - 1 do
+				local cid = nil
+				pcall(function() cid = UIComponent(root:Find(i)):Id() end)
+				if cid and (tostring(cid):find("advisor", 1, true) or i < 10) then
+					names[#names + 1] = i .. ":" .. tostring(cid)
+				end
+			end
+			L[#L + 1] = "자식표본=" .. table.concat(names, ",")
+		end
+		local fb = nil
+		pcall(function() fb = find_uicomponent(root, BUTTON_ID) end)
+		L[#L + 1] = "버튼find=" .. tostring(fb ~= nil)
+		L[#L + 1] = "패널핸들생존=" .. tostring(h_ok(g_h["__panel"]))
+		proof("[v69해부#" .. g_autopsy .. "] " .. table.concat(L, " · "), true)
+	end)
+end
+
 local function get_panel()
+	if h_ok(g_h["__panel"]) then return g_h["__panel"] end   -- v69: 검색 없이 핸들
+	g_h["__panel"], g_h["__panel_text"], g_h["__panel_bg"] = nil, nil, nil
 	local panel = nil
 	pcall(function()
 		local root = core:get_ui_root()
 		panel = find_uicomponent(root, panel_name())
-		if panel then return end
-		if g_panel_fails >= 4 then return end            -- 이번 세션은 포기 — 재시도 폭풍 금지
-		local nm = panel_name()
-		local addr = root:CreateComponent(nm, PANEL_TEMPLATE)
-		if addr then
-			panel = UIComponent(addr)
-			proof("v68 패널 생성 " .. nm .. " (자체 템플릿)", true)
-			return
+		if not panel then
+			ui_autopsy("패널 검색 실패")
+			if g_panel_fails >= 4 then return end        -- 이번 세션은 포기 — 재시도 폭풍 금지
+			local nm = panel_name()
+			local addr = root:CreateComponent(nm, PANEL_TEMPLATE)
+			if addr then
+				panel = UIComponent(addr)
+				proof("v68 패널 생성 " .. nm .. " (자체 템플릿)", true)
+			else
+				g_panel_fails = g_panel_fails + 1
+				g_panel_gen = g_panel_gen + 1
+				proof(string.format("v68 !!! 패널 생성 실패 %s (%d/4)%s", nm, g_panel_fails,
+					(g_panel_fails >= 4) and " — 이번 세션은 패널 생성을 중단합니다" or ""), true)
+				return
+			end
 		end
-		g_panel_fails = g_panel_fails + 1
-		g_panel_gen = g_panel_gen + 1
-		proof(string.format("v68 !!! 패널 생성 실패 %s (%d/4)%s", nm, g_panel_fails,
-			(g_panel_fails >= 4) and " — 이번 세션은 패널 생성을 중단합니다" or ""), true)
+		g_h["__panel"] = panel
+		-- 자식도 지금(핸들이 확실히 유효한 순간) 붙잡는다 — 이후 root 불요.
+		pcall(function() g_h["__panel_text"] = find_uicomponent(panel, "text_child") end)
+		pcall(function() g_h["__panel_bg"] = find_uicomponent(panel, "frame_black") end)
 	end)
 	return panel
 end
 
 local function panel_text()
+	if h_ok(g_h["__panel_text"]) then return g_h["__panel_text"] end
+	g_h["__panel_text"] = nil
 	local t = nil
-	pcall(function() t = find_uicomponent(core:get_ui_root(), panel_name(), "text_child") end)
+	pcall(function()
+		local p = get_panel()
+		if p then t = find_uicomponent(p, "text_child") end
+	end)
+	if t then g_h["__panel_text"] = t end
 	return t
 end
 
@@ -2088,10 +2164,14 @@ end
 local function panel_draw(text)
 	pcall(function()
 		if not get_panel() then return end
-		local root = core:get_ui_root()
 		local textc = panel_text()
 		if not textc then proof("v41 !!! text_child 못찾음", true); return end
-		local bg = find_uicomponent(root, panel_name(), "frame_black")   -- 숨겨진 검은 배너 배경
+		-- v69: 배경도 핸들 우선 — root 검색이 죽어도 그린다.
+		local bg = h_ok(g_h["__panel_bg"]) and g_h["__panel_bg"] or nil
+		if not bg then
+			pcall(function() bg = find_uicomponent(get_panel(), "frame_black") end)
+			g_h["__panel_bg"] = bg
+		end
 		pcall(function() textc:SetTextHAlign("left") end)
 		pcall(function() textc:SetOpacity(255) end)
 		local box_h = measure(textc, text) or 600    -- 측정 실패 폴백(넉넉히 — 잘리는 것보다 큰 게 낫다)
@@ -2123,9 +2203,17 @@ end
 
 local function panel_hide()
 	pcall(function()
-		local root = core:get_ui_root()
-		local textc = find_uicomponent(root, panel_name(), "text_child")
-		local bg = find_uicomponent(root, panel_name(), "frame_black")
+		-- v69: 핸들로 숨긴다 — "닫히지 않는 패널"(28일 저녁)은 root 검색 사망 때
+		-- 이 함수가 패널을 못 찾아 no-op이 된 것이었다.
+		local textc = h_ok(g_h["__panel_text"]) and g_h["__panel_text"] or nil
+		local bg    = h_ok(g_h["__panel_bg"]) and g_h["__panel_bg"] or nil
+		if not (textc and bg) then
+			local p = get_panel()
+			if p then
+				if not textc then pcall(function() textc = find_uicomponent(p, "text_child") end) end
+				if not bg then pcall(function() bg = find_uicomponent(p, "frame_black") end) end
+			end
+		end
 		if textc then pcall(function() textc:SetVisible(false) end) end
 		if bg then pcall(function() bg:SetVisible(false) end) end
 	end)
@@ -2133,22 +2221,22 @@ end
 
 -- 버튼 1개 생성(있으면 재사용). 첫 성공 템플릿을 기억해 나머지에 재사용.
 local function make_button(id)
-	local btn = nil
-	pcall(function()
-		local root = core:get_ui_root()
-		btn = find_uicomponent(root, id)
-		if btn then return end
-		local addr = nil
-		if g_ui.tmpl then
-			pcall(function() addr = root:CreateComponent(id, g_ui.tmpl) end)
-		else
-			for _, t in ipairs(TAB_TEMPLATES) do
-				pcall(function() addr = root:CreateComponent(id, t) end)
-				if addr then g_ui.tmpl = t; proof("v41 탭 템플릿 채택 = " .. t, true); break end
+	local btn = h_get(id)                                   -- v69: 핸들 우선(검색은 폴백)
+	if not btn then
+		pcall(function()
+			local root = core:get_ui_root()
+			local addr = nil
+			if g_ui.tmpl then
+				pcall(function() addr = root:CreateComponent(id, g_ui.tmpl) end)
+			else
+				for _, t in ipairs(TAB_TEMPLATES) do
+					pcall(function() addr = root:CreateComponent(id, t) end)
+					if addr then g_ui.tmpl = t; proof("v41 탭 템플릿 채택 = " .. t, true); break end
+				end
 			end
-		end
-		if addr then btn = UIComponent(addr) end
-	end)
+			if addr then btn = UIComponent(addr); g_h[id] = btn end
+		end)
+	end
 	if btn then pcall(function() btn:SetInteractive(true); btn:SetDisabled(false); btn:RegisterTopMost() end) end
 	return btn
 end
@@ -2338,13 +2426,13 @@ end
 
 local function ui_tabs_visible(vis)
 	pcall(function()
-		local root = core:get_ui_root()
+		-- v69: 핸들 우선 — root 검색이 죽어도 탭은 켜지고 꺼져야 한다.
 		for _, t in ipairs(g_ui.tabs) do
-			local b = find_uicomponent(root, t.comp)
+			local b = h_get(t.comp)
 			if b then pcall(function() b:SetVisible(vis) end) end
 		end
 		for _, id in ipairs({ NAV_PREV, NAV_NEXT }) do
-			local b = find_uicomponent(root, id)
+			local b = h_get(id)
 			if b then pcall(function() b:SetVisible(vis and g_ui.npages > 1) end) end
 		end
 	end)
@@ -2353,9 +2441,8 @@ end
 -- 활성 탭 표시. probe_selected가 확인해 준 방식만 쓴다(둘 다 쓰면 v41처럼 겹친다).
 local function ui_mark_active()
 	pcall(function()
-		local root = core:get_ui_root()
 		for _, t in ipairs(g_ui.tabs) do
-			local b = find_uicomponent(root, t.comp)
+			local b = h_get(t.comp)                          -- v69: 핸들 우선
 			if b then
 				if g_ui.sel then
 					pcall(function() b:SetState((t.id == g_ui.tab) and "selected" or (g_ui.state0 or "default")) end)
@@ -2380,8 +2467,8 @@ local function ui_place_nav()
 		local ymax = (g_ui.rh or 900) - LAY.TABH - 8
 		if y > ymax then y = ymax end
 		local cx = LAY.X + math.floor((LAY.COL + LAY.PAD * 2) / 2)
-		local p  = find_uicomponent(root, NAV_PREV)
-		local nx = find_uicomponent(root, NAV_NEXT)
+		local p  = h_get(NAV_PREV)                           -- v69: 핸들 우선
+		local nx = h_get(NAV_NEXT)
 		if p  then pcall(function() p:MoveTo(cx - w - 6, y) end) end
 		if nx then pcall(function() nx:MoveTo(cx + 6, y) end) end
 	end)
@@ -2573,7 +2660,7 @@ local function ensure_base()
 		local race = (prof.race and prof.race ~= "(일반)") and prof.race or fname(S.faction)
 		local tip = string.format("📋 %s 참모 브리핑 · %s턴\n%s", race, tostring(num(S.turn, "?")), prose)
 		pcall(function()                                   -- 메인 버튼 툴팁(패널 없이도 요약이 보이게)
-			local btn = find_uicomponent(core:get_ui_root(), BUTTON_ID)
+			local btn = h_get(BUTTON_ID)                   -- v69: 핸들 우선
 			if btn then btn:SetTooltipText(tip, "", true) end
 		end)
 		B.S, B.D, B.cand, B.prof, B.prose = S, D, cand, prof, prose
@@ -2607,7 +2694,13 @@ local function run_dev_script()
 		if not g_dev_waitlog then g_dev_waitlog = true; proof("[v67핫리로드] 대기 — " .. DEV_PATH .. " 없음", true) end
 		return
 	end
-	local sig = #src .. ":" .. src:sub(1, 40) .. src:sub(-40)
+	-- v69: 서명을 바이트 정확하게. WH3의 string.sub은 문자(UTF-8) 단위라(실측)
+	-- 한글 포함 파일에선 경계가 미묘했고, 28일 저녁엔 같은 파일(1191B)이 서명을
+	-- 통과해 재실행되는 현상까지 있었다 — byte()는 바이트 단위 정상이므로 이걸로.
+	-- 서명값을 프루프에 남겨 재발 시 추적한다.
+	local sig = #src % 2147483647
+	for i = 1, math.min(#src, 64) do sig = (sig * 31 + src:byte(i)) % 2147483647 end
+	for i = math.max(1, #src - 63), #src do sig = (sig * 31 + src:byte(i)) % 2147483647 end
 	if sig == g_dev_sig then return end                  -- 내용이 안 바뀌었으면 재실행하지 않는다
 	g_dev_sig = sig
 	local loader = loadstring or load
@@ -2620,7 +2713,8 @@ local function run_dev_script()
 	-- 이 파일의 환경을 청크에 물려줘 dev 파일이 우리가 보는 전역을 그대로 보게 한다.
 	if setfenv and getfenv then pcall(function() setfenv(chunk, getfenv(run_dev_script)) end) end
 	local ok2, err2 = pcall(chunk)
-	proof(string.format("[v67핫리로드] 실행 %s (%dB)", ok2 and "OK" or ("실패: " .. tostring(err2)), #src), true)
+	proof(string.format("[v67핫리로드] 실행 %s (%dB sig=%s)",
+		ok2 and "OK" or ("실패: " .. tostring(err2)), #src, tostring(sig)), true)
 	if ok2 then
 		-- 새 코드가 바로 보이도록 이번 턴 캐시를 통째로 비운다(수집부터 다시).
 		pcall(function() g_base.tried = nil; g_base.content, g_base.pages = {}, {} end)
@@ -2734,6 +2828,7 @@ local function create_advisor_button()
 		local addr = root:CreateComponent(BUTTON_ID, BUTTON_TEMPLATE)
 		if not addr then proof("2a !!! CreateComponent nil", true); return end
 		local btn = UIComponent(addr)
+		g_h[BUTTON_ID] = btn                               -- v69: 핸들 캐시
 		local rw, rh = root:Dimensions()
 		btn:MoveTo(math.floor(rw * 0.45), 90)
 		btn:SetVisible(true); btn:SetInteractive(true); btn:SetDisabled(false)
@@ -2831,9 +2926,13 @@ if ADVISOR_TEST_EXPORTS then
 		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
 		run_dev_script = run_dev_script,                              -- v67 핫리로드
 		set_dev_path = function(p) DEV_PATH = p; g_dev_sig = nil end,
-		-- v68: 패널 생성 폭풍 상한 검증(19:55 CTD 재발 방지 테스트용)
-		get_panel = get_panel,
-		panel_reset = function() g_panel_gen, g_panel_fails = 0, 0 end,
+		-- v68/v69: 패널 생성 폭풍 상한 + 핸들 레지스트리 검증용
+		get_panel = get_panel, panel_text = panel_text,
+		panel_reset = function()
+			g_panel_gen, g_panel_fails = 0, 0
+			for k in pairs(g_h) do g_h[k] = nil end
+		end,
+		panel_seed = function(k, u) g_h[k] = u end,
 		num = num, clamp = clamp, sev = sev,
 		has_batchim = has_batchim, josa = josa, josa_ro = josa_ro,
 		key_set = key_set, runway_phrase = runway_phrase,   -- v40
