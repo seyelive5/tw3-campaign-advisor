@@ -325,6 +325,34 @@ do
 	T.panel_reset()
 end
 
+-- ══ 0h. 패널 무해화 + 버튼 생성 상한 (v70 코드리뷰 반영) ═════════════
+-- R1: 패널 body는 화면 하단 중앙에 도킹된 상주 컨테이너 — 닫기는 body를
+--     꺼야 하고(히트테스트 제로), root 검색 없이 핸들만으로 돼야 한다.
+-- R2: 버튼 생성 실패도 패널처럼 세션 상한이 있어야 한다(폭풍 재발 방지).
+log("== 0h. 무해화·버튼 상한 ==")
+do
+	T.panel_reset()
+	local vis = {}
+	local body = { Visible = function() return true end,
+	               SetVisible = function(self, v) vis[#vis + 1] = v end }
+	T.panel_seed("__panel", body)
+	core, find_uicomponent = nil, nil
+	T.panel_hide()
+	ok(vis[#vis] == false, "무해화: 닫기가 body를 끈다(핸들만으로)", tostring(vis[#vis]))
+	T.panel_reset()
+	local calls = 0
+	core = { get_ui_root = function()
+		return { CreateComponent = function() calls = calls + 1; return nil end }
+	end }
+	find_uicomponent = function() return nil end
+	for _ = 1, 12 do T.make_button("advisor_tab_x") end
+	local at8 = calls
+	for _ = 1, 5 do T.make_button("advisor_tab_x") end
+	ok(calls == at8 and at8 > 0, "버튼: 실패 8회 후 생성 시도 중단", at8 .. "→" .. tostring(calls))
+	core, find_uicomponent = nil, nil
+	T.panel_reset()
+end
+
 -- ══ 1. josa / has_batchim ═══════════════════════════════════════════
 log("== 1. 한국어 조사 ==")
 ok(T.has_batchim("제국") == true,  "받침: 제국=true")

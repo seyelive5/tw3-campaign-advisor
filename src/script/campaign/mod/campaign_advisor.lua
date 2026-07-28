@@ -2073,6 +2073,15 @@ local function get_panel()
 		-- 자식도 지금(핸들이 확실히 유효한 순간) 붙잡는다 — 이후 root 불요.
 		pcall(function() g_h["__panel_text"] = find_uicomponent(panel, "text_child") end)
 		pcall(function() g_h["__panel_bg"] = find_uicomponent(panel, "frame_black") end)
+		-- v70(리뷰 R1): 패널 무해화. 템플릿 body는 화면 하단 중앙(1280×128, 유닛 카드
+		-- 영역)에 도킹된 컨테이너인데 v68부터 세션 내내 존재한다 — 히트테스트에
+		-- 걸리면 그 밑 게임 HUD 클릭을 삼킬 수 있다("다른 기능이 안 된다"의 유력
+		-- 후보). 셋 다 입력을 받지 않게 하고, body는 숨김으로 시작한다
+		-- (panel_draw가 켜고 panel_hide가 끈다 — body가 마스터 스위치).
+		pcall(function() panel:SetInteractive(false) end)
+		pcall(function() if g_h["__panel_text"] then g_h["__panel_text"]:SetInteractive(false) end end)
+		pcall(function() if g_h["__panel_bg"] then g_h["__panel_bg"]:SetInteractive(false) end end)
+		pcall(function() panel:SetVisible(false) end)
 	end)
 	return panel
 end
@@ -2163,7 +2172,9 @@ end
 -- 본문 한 페이지를 그린다(정확 높이 → 클리핑·데드스페이스 없음).
 local function panel_draw(text)
 	pcall(function()
-		if not get_panel() then return end
+		local p = get_panel()
+		if not p then return end
+		pcall(function() p:SetVisible(true) end)     -- v70: body는 닫힘 동안 꺼져 있다
 		local textc = panel_text()
 		if not textc then proof("v41 !!! text_child 못찾음", true); return end
 		-- v69: 배경도 핸들 우선 — root 검색이 죽어도 그린다.
@@ -2216,13 +2227,19 @@ local function panel_hide()
 		end
 		if textc then pcall(function() textc:SetVisible(false) end) end
 		if bg then pcall(function() bg:SetVisible(false) end) end
+		-- v70(리뷰 R1): body 자체를 끈다 — 렌더·히트테스트 완전 제로(자식까지 전파).
+		local p = h_ok(g_h["__panel"]) and g_h["__panel"] or nil
+		if p then pcall(function() p:SetVisible(false) end) end
 	end)
 end
 
 -- 버튼 1개 생성(있으면 재사용). 첫 성공 템플릿을 기억해 나머지에 재사용.
+-- v70(리뷰 R2): 생성 실패에 세션 상한 — root 검색이 죽은 세션에서 클릭마다
+-- 탭 7개+페이지 2개의 생성 재시도가 무한 반복되는 것을 막는다(v66 폭풍의 잔존 패턴).
+local g_btn_fails = 0
 local function make_button(id)
 	local btn = h_get(id)                                   -- v69: 핸들 우선(검색은 폴백)
-	if not btn then
+	if not btn and g_btn_fails < 8 then
 		pcall(function()
 			local root = core:get_ui_root()
 			local addr = nil
@@ -2236,6 +2253,10 @@ local function make_button(id)
 			end
 			if addr then btn = UIComponent(addr); g_h[id] = btn end
 		end)
+		if not btn then
+			g_btn_fails = g_btn_fails + 1
+			if g_btn_fails == 8 then proof("v70 !!! 버튼 생성 실패 8회 — 이번 세션은 버튼 생성을 중단합니다", true) end
+		end
 	end
 	if btn then pcall(function() btn:SetInteractive(true); btn:SetDisabled(false); btn:RegisterTopMost() end) end
 	return btn
@@ -2926,10 +2947,11 @@ if ADVISOR_TEST_EXPORTS then
 		split_lines = split_lines, domains_sorted = domains_sorted,   -- v41 셸
 		run_dev_script = run_dev_script,                              -- v67 핫리로드
 		set_dev_path = function(p) DEV_PATH = p; g_dev_sig = nil end,
-		-- v68/v69: 패널 생성 폭풍 상한 + 핸들 레지스트리 검증용
-		get_panel = get_panel, panel_text = panel_text,
+		-- v68/v69/v70: 패널 생성 폭풍 상한 + 핸들 레지스트리 + 무해화 검증용
+		get_panel = get_panel, panel_text = panel_text, panel_hide = panel_hide,
+		make_button = make_button,
 		panel_reset = function()
-			g_panel_gen, g_panel_fails = 0, 0
+			g_panel_gen, g_panel_fails, g_btn_fails = 0, 0, 0
 			for k in pairs(g_h) do g_h[k] = nil end
 		end,
 		panel_seed = function(k, u) g_h[k] = u end,
