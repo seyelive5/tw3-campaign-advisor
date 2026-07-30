@@ -290,7 +290,12 @@ local function build(S, B)
 	-- 지금 할 일
 	local todo = {}
 	local function add(t) if #todo < 5 then todo[#todo + 1] = t end end
-	if #G.wars >= 3 and #peace > 0 then
+	local aggro = (S and S.stance == "aggro")   -- v74: 전투가 성장 엔진인 종족 — 화친 권고 금지
+	if aggro then
+		if #G.wars >= 3 then
+			add(string.format("전선이 %d개지만 이 종족은 싸울수록 강해집니다 — 화친 대신 가장 약한 전선부터 끝내세요.", #G.wars))
+		end
+	elseif #G.wars >= 3 and #peace > 0 then
 		local nm = names(peace, 1)
 		add(string.format("전선이 %d개입니다 — %s%s 화친해 줄이세요(성사 가능).", #G.wars, nm, J(nm, "과", "와")))
 	elseif #peace > 0 then

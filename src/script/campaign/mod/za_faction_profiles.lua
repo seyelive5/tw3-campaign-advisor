@@ -6,6 +6,9 @@
 
   pr   = 두뇌 6차원 재가중(0.0~1.0): military/economy/diplomacy/expansion/tech/defense.
   sig  = 진영 시그니처 액션 {label, dim, note} → 추천 후보로 추가(dim으로 재가중).
+  stance = 전략 성향(선택). "aggro" = 전투·약탈이 성장 엔진이라 멈추면 약해지는 종족.
+         국면 진단·다턴 계획·전쟁/외교 탭이 화친·웅크림 권고를 각개격파 권고로 바꾼다(v74).
+         identity 문구가 이미 '쉼 없이 싸워라'인 종족에만 부여 — 짐작 부여 금지.
   lords= 전설군주 subtype_key → {name, note}. 키는 db.pack frontend_faction_leaders 실측.
          (대표 + 주요 대안 군주. 안 맞는 키는 런타임에 "미등록 키"로 폴백 → 무해.)
   런타임 식별: faction:subculture(); 군주: faction:faction_leader():character_subtype_key().
@@ -98,7 +101,7 @@ CA_FACTION_PROFILES = {
             ["wh2_dlc13_lzd_nakai"]={name="나카이", note="정착 없이 순회하는 유랑 호드. 정착지를 옛 신에게 헌정해 버프를 얻으세요"} } },
 
   -- ── Destruction ──
-  ["wh_main_sc_grn_greenskins"] = { race="그린스킨", identity="싸워야 강해지는 공격형. WAAAGH!·스크랩 스노우볼",
+  ["wh_main_sc_grn_greenskins"] = { race="그린스킨", stance="aggro", identity="싸워야 강해지는 공격형. WAAAGH!·스크랩 스노우볼",
     pr={military=0.9,economy=0.5,diplomacy=0.35,expansion=0.85,tech=0.5,defense=0.45},
     sig={label="WAAAGH! 유지", dim="military", note="계속 싸워 WAAAGH!를 굴리고 스크랩으로 강화하세요"},
     tips={"군대를 계속 전투에 굴려 WAAAGH!를 유지하세요","이웃 그린스킨을 잡아 빠르게 확장·통합"},
@@ -109,7 +112,7 @@ CA_FACTION_PROFILES = {
             ["wh_dlc06_grn_skarsnik"]={name="스카르스닉", note="고블린·최상위 메커니즘, 초반 폭발력 최고. 야습으로 몰아치세요"},
             ["wh2_dlc15_grn_grom_the_paunch"]={name="그롬", note="요리 가마솥·대(對)하이엘프. 재료를 모아 레시피 버프를 쌓으세요"},
             ["wh3_dlc26_grn_gorbad_ironclaw"]={name="고르바드 아이언클로", note="궁·전쟁기계·고블린 스크린의 제병협동 전술형으로 운용하세요"} } },
-  ["wh_dlc03_sc_bst_beastmen"] = { race="비스트맨", melee=true, identity="정착지 부수는 유목 히트앤런. 허드스톤·드레드",
+  ["wh_dlc03_sc_bst_beastmen"] = { race="비스트맨", melee=true, stance="aggro", identity="정착지 부수는 유목 히트앤런. 허드스톤·드레드",
     pr={military=0.9,economy=0.35,diplomacy=0.1,expansion=0.5,tech=0.4,defense=0.3},
     sig={label="허드스톤", dim="military", note="밀집지에 허드스톤을 심고 몰살로 Ruination을 극대화하세요"},
     tips={"인구밀집지에 허드스톤을 심고 몰살로 Ruination 극대화","한 곳 고집 말고 계속 이동하며 새 표적을 사냥하세요"},
@@ -137,7 +140,7 @@ CA_FACTION_PROFILES = {
             ["wh_main_chs_archaon"]={name="아콘", note="소모 면역·전 카오스 외교보너스, 통합 가능. 다크 포트리스를 확보하며 정복하세요"},
             ["wh_dlc01_chs_kholek_suneater"]={name="콜렉 선이터", note="괴수 중심 둠스택. 강력한 몬스터로 전선을 밀어붙이세요"},
             ["wh_dlc01_chs_prince_sigvald"]={name="시그발트", note="슬라네쉬 정예·속도. 화려한 근접군으로 각개격파하세요"} } },
-  ["wh_dlc08_sc_nor_norsca"] = { race="노스카", melee=true, identity="약탈 침략자. 4대신 제단+전리품 경제(7.0)",
+  ["wh_dlc08_sc_nor_norsca"] = { race="노스카", melee=true, stance="aggro", identity="약탈 침략자. 4대신 제단+전리품 경제(7.0)",
     pr={military=0.85,economy=0.5,diplomacy=0.3,expansion=0.6,tech=0.4,defense=0.4},
     sig={label="4신 제단·약탈", dim="military", note="제단으로 4대신을 병행 축적하고 부유한 해안을 약탈하세요"},
     tips={"제단을 요지에 세워 4대신을 병행 축적하세요","부유한 해안을 지속 약탈하되 보급 캐러밴을 호위"},
@@ -158,7 +161,7 @@ CA_FACTION_PROFILES = {
             ["wh3_dlc26_ogr_golgfag_maneater"]={name="골그팍", note="용병 계약형(동맹 불가). 계약지로 즉시 이동하며 돈을 버세요"} } },
 
   -- ── Chaos Daemons ──
-  ["wh3_main_sc_kho_khorne"] = { race="코른", melee=true, identity="순수 학살. 외교·경제 포기, 멈추면 약해짐",
+  ["wh3_main_sc_kho_khorne"] = { race="코른", melee=true, stance="aggro", identity="순수 학살. 외교·경제 포기, 멈추면 약해짐",
     pr={military=1.0,economy=0.3,diplomacy=0.1,expansion=0.85,tech=0.4,defense=0.2},
     sig={label="해골왕좌", dim="military", note="쉼 없이 교전해 해골왕좌 티어를 올리고 블러드호스트를 소환하세요"},
     tips={"1턴부터 쉼 없이 교전해 해골을 수급하세요","해골왕좌 티어를 올려 블러드호스트로 다전선 압박"},
@@ -239,7 +242,7 @@ CA_FACTION_PROFILES = {
             ["wh2_dlc11_cst_harkon"]={name="루터 하콘", note="초보 친화 균형형. 항구를 Cove로 도배해 경제를 구축하세요"},
             ["wh2_dlc11_cst_noctilus"]={name="녹틸루스", note="가장 공격적인 호드. 네크로펙스 둠스택으로 밀어붙이세요"},
             ["wh2_dlc11_cst_aranessa"]={name="아라네사", note="인간 해적·물 위 이동. 살아있는 병력으로 해안을 장악하세요"} } },
-  ["wh2_main_sc_def_dark_elves"] = { race="다크 엘프", identity="노예로 경제·건설, 살육의 기세로 폭발. 초공격형",
+  ["wh2_main_sc_def_dark_elves"] = { race="다크 엘프", stance="aggro", identity="노예로 경제·건설, 살육의 기세로 폭발. 초공격형",
     pr={military=0.85,economy=0.75,diplomacy=0.35,expansion=0.85,tech=0.55,defense=0.55},
     sig={label="노예 경제", dim="expansion", note="약탈로 노예를 모아 경제를 돌리고 살육의 기세를 활용하세요"},
     tips={"쉼 없이 전쟁·약탈로 노예를 사냥하세요","노예는 즉시 건설·수입에 소비해 control을 관리"},

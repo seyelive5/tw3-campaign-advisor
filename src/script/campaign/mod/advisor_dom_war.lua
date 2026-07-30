@@ -34,13 +34,15 @@ local WAR_CHEST_LOW = 300      -- v36 실측 기준(본체 계획 엔진과 같�
 local RATIO_BAD, RATIO_GOOD = 0.8, 1.5
 
 -- 전선 하나에 대한 한 줄 판정. 전력비를 모르면 모른다고 한다.
-local function verdict(ratio, chest)
+-- v74: aggro 종족은 불리해도 화친 대신 '더 약한 전선 우선'을 권한다.
+local function verdict(ratio, chest, aggro)
 	if ratio == nil then
 		return "전력 정보가 없어 승산은 따지지 않습니다."
 	end
 	local dry = (type(chest) == "number" and chest < WAR_CHEST_LOW)
 	if ratio < RATIO_BAD then
-		return "불리합니다. 방어를 굳히거나 화친을 검토하세요."
+		return aggro and "불리합니다. 정면 결전을 피하고 더 약한 전선부터 정리하세요."
+		             or  "불리합니다. 방어를 굳히거나 화친을 검토하세요."
 	elseif ratio >= RATIO_GOOD then
 		return dry and "압도적이고 적은 군비가 말랐습니다 — 지금 몰아치세요."
 		            or "우세합니다. 밀어붙일 수 있습니다."
@@ -113,6 +115,7 @@ local function build(S, B)
 
 	local fronts, far, mine = fronts_of(S)
 	local elim_key, peace_key = plan_marks(S)
+	local aggro = (S.stance == "aggro")   -- v74: 화친 권고 대신 각개격파 권고
 
 	say(string.format("[v48전쟁프로브] 전선=%s(국경밖 %s) 내전력=%s 포위=%s 위협=%s 표적=%s | 1전선: %s 잔여=%s 전력=%s 군비=%s",
 		tostring(#fronts), tostring(far), tostring(mine), tostring(#sieges), tostring(#threat),
@@ -164,7 +167,7 @@ local function build(S, B)
 			elseif w.key == peace_key then mark = " ◀ 계획상 화친 대상" end
 			L[#L + 1] = string.format("%d. %s%s", i, fdisp(w.key), mark)
 			if #p > 0 then L[#L + 1] = "   " .. table.concat(p, " · ") end
-			L[#L + 1] = "   " .. verdict(w.ratio, w.chest) ..
+			L[#L + 1] = "   " .. verdict(w.ratio, w.chest, aggro) ..
 				(pset[w.key] and " (화친 가능)" or "")
 		end
 		if #fronts > 5 then L[#L + 1] = string.format("  … 외 %d전선", #fronts - 5) end
@@ -223,7 +226,10 @@ local function build(S, B)
 	end
 	if worst then
 		local nm = fdisp(worst.key)
-		if pset[worst.key] then
+		if aggro then
+			add(string.format("%s%s 전력비 %.2f배로 불리합니다 — 이 전선은 정면 결전을 피하고, 더 약한 전선부터 부수세요.",
+				nm, J(nm, "은", "는"), worst.ratio))
+		elseif pset[worst.key] then
 			add(string.format("%s%s 전력비 %.2f배로 불리합니다 — 화친이 성사되니 지금 접으세요.",
 				nm, J(nm, "은", "는"), worst.ratio))
 		else
@@ -243,7 +249,9 @@ local function build(S, B)
 			nm, J(nm, "은", "는"), best.regions, best.ratio,
 			near and (" 다음 수: " .. rdisp(near) .. " 공략.") or ""))
 	end
-	if #fronts + far >= 3 and #peace_ok > 0 then
+	if #fronts + far >= 3 and aggro then
+		add(string.format("전선이 %d개입니다 — 싸울수록 강해지는 종족입니다. 가장 약한 전선부터 끝내 수를 줄이세요.", #fronts + far))
+	elseif #fronts + far >= 3 and #peace_ok > 0 then
 		add(string.format("전선이 %d개입니다 — 화친이 되는 곳부터 접어 전력을 모으세요.", #fronts + far))
 	end
 

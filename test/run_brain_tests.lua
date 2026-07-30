@@ -1106,6 +1106,83 @@ do
 	ok(pr.steps[1] and pr.steps[1].key == "raid", "폴백: 영구 호드 → 약탈", pr.steps[1] and tostring(pr.steps[1].key))
 end
 do
+	-- ══ v74. 전략 성향(stance) — aggro 종족은 화친·웅크림 권고의 극성이 뒤집힌다 ══
+	-- 실측 동기: 스카브란드(코른) 새 캠페인, 시작 다전선을 '궁지'로 오진 → "사수·화친" 권고.
+	-- 프로파일은 이미 "쉼 없이 학살"을 알고 있었다(identity·tips) — 진단·계획에 배선만 없었다.
+	ok(CA_FACTION_PROFILES["wh3_main_sc_kho_khorne"].stance == "aggro", "프로파일: 코른 = aggro")
+	ok(CA_FACTION_PROFILES["wh_main_sc_grn_greenskins"].stance == "aggro"
+		and CA_FACTION_PROFILES["wh_dlc08_sc_nor_norsca"].stance == "aggro"
+		and CA_FACTION_PROFILES["wh_dlc03_sc_bst_beastmen"].stance == "aggro"
+		and CA_FACTION_PROFILES["wh2_main_sc_def_dark_elves"].stance == "aggro",
+		"프로파일: aggro 5종(코른·그린스킨·노스카·비스트맨·다크엘프)")
+	ok(CA_FACTION_PROFILES["wh_main_sc_emp_empire"].stance == nil
+		and CA_FACTION_PROFILES["wh_main_sc_dwf_dwarfs"].stance == nil,
+		"프로파일: 방어형 종족엔 stance 없음(기본 극성 유지)")
+
+	local function mk(extra)
+		local s = baseS{ turn = 20, immediate = 3, war_count = 3,
+			border_enemies = { "e1", "e2", "e3" }, war_set = { e1 = true, e2 = true, e3 = true },
+			war_names = { "A", "B", "C" },
+			strat = { enemy = { e1 = { regions = 2 }, e2 = { regions = 5 }, e3 = { regions = 8 } },
+				provinces = {}, armies = {}, endgame = { active = {} } } }
+		for k, v in pairs(extra or {}) do s[k] = v end
+		return s
+	end
+	-- 진단: 다전선 3(포위 없음) — 일반은 궁지, aggro는 평시(소모전)
+	local Sn = mk{}
+	ok(T.diagnose(Sn, (select(1, T.analyze(Sn, T.get_profile(Sn))))).label == "궁지", "대조군: 다전선 3 → 궁지(일반 종족)")
+	local Sa = mk{ stance = "aggro" }
+	local dga = T.diagnose(Sa, (select(1, T.analyze(Sa, T.get_profile(Sa)))))
+	ok(dga.label ~= "궁지", "aggro: 다전선 3만으론 궁지 아님", dga.label)
+	-- 진단: 진짜 포위는 aggro라도 궁지 — 단 문구는 각개격파형
+	local Sb = mk{ stance = "aggro", threats = { sieges = { "cap" }, threatened = {}, targets = {}, my_field = {} } }
+	local dgb = T.diagnose(Sb, (select(1, T.analyze(Sb, T.get_profile(Sb)))))
+	ok(dgb.label == "궁지" and has(dgb.note, "약한 전선부터"), "aggro: 포위는 궁지 유지 + 각개격파 문구", dgb.note)
+	-- 진단: 초반 문구 — 일반 '경제 기틀' 대신 aggro '연승·각개격파'
+	local Sy = baseS{ stance = "aggro", turn = 2, immediate = 1, war_count = 1,
+		border_enemies = { "e1" }, war_set = { e1 = true }, war_names = { "E" } }
+	local dgy = T.diagnose(Sy, (select(1, T.analyze(Sy, T.get_profile(Sy)))))
+	ok(dgy.label == "초반 정착" and has(dgy.note, "각개격파"), "aggro: 초반 정착 = 연승 지향 문구", dgy.note)
+
+	-- 계획: 생존 국면에도 peace 단계 생성 금지 + 최약체 각개격파 우선
+	local Sp2 = mk{ stance = "aggro", diplo = { peace = { "e3" }, ally = {} },
+		threats = { sieges = { "cap" }, threatened = {}, targets = {}, my_field = {} } }
+	local pp2 = T.plan_generate(Sp2, "궁지")
+	local haspeace = false
+	for _, st in ipairs(pp2.steps) do if st.kind == "peace" then haspeace = true end end
+	ok(not haspeace, "aggro: 생존 국면에도 peace 단계 없음")
+	ok(pp2.steps[1] and pp2.steps[1].kind == "elim" and pp2.steps[1].key == "e1",
+		"aggro: 최약체(잔여 2) 각개격파 우선", pp2.steps[1] and tostring(pp2.steps[1].key))
+	-- 계획: 열세+화친가능이라도 aggro는 제거 유지(일반 종족의 peace 전환은 기존 테스트가 지킨다)
+	local Sl2 = baseS{ stance = "aggro", border_enemies = { "foe" }, war_set = { foe = true },
+		diplo = { peace = { "foe" }, ally = {} },
+		strat = { enemy = { foe = { regions = 3, strength = 9000 } }, my_strength = 3000,
+			provinces = {}, armies = {}, endgame = { active = {} } } }
+	local pl2 = T.plan_generate(Sl2, "소모전")
+	ok(pl2.steps[1] and pl2.steps[1].kind == "elim", "aggro: 열세+화친가능 → 제거 유지", pl2.steps[1] and pl2.steps[1].kind)
+	-- 계획 폴백: 궁지 + 적 정보 실패 → momentum(사수가 아니라)
+	local Sh2 = baseS{ stance = "aggro", immediate = 1, border_enemies = { "e1" }, war_names = { "E" }, war_set = { e1 = true },
+		threats = { sieges = { "cap" }, threatened = {}, targets = {}, my_field = {} },
+		strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local ph2 = T.plan_generate(Sh2, "궁지")
+	ok(ph2.steps[1] and ph2.steps[1].key == "momentum", "aggro 폴백: 궁지 → 기세 유지(사수 아님)", ph2.steps[1] and tostring(ph2.steps[1].key))
+	Sh2.plan = ph2
+	ok(has(table.concat(T.plan_prose_lines(Sh2), "\n"), "기세 유지 — 멈추면 약해집니다"), "산문: momentum 자세 문구")
+	-- 계획 폴백: 재정 위기 — 키는 같은 retrench, 어휘만 약탈형
+	local Sc2 = baseS{ stance = "aggro", strat = { enemy = {}, provinces = {}, armies = {}, endgame = { active = {} } } }
+	local pc2 = T.plan_generate(Sc2, "재정 위기")
+	ok(pc2.steps[1] and pc2.steps[1].key == "retrench", "aggro: 재정위기 → retrench 키 유지")
+	Sc2.plan = pc2
+	ok(has(table.concat(T.plan_prose_lines(Sc2), "\n"), "약탈로 메우기"), "산문: aggro 긴축 = 약탈 어휘")
+
+	-- 산문(외교 줄): 화친 사실은 알리되 권하지 않는다
+	local Sd = mk{ stance = "aggro", diplo = { peace = { "e3" }, ally = {} } }
+	local _, _, _, prosed = run(Sd)
+	ok(has(prosed, "화친이 성사되긴 합니다만") and has(prosed, "각개격파로 하세요"), "산문: aggro 화친 비권고",
+		prosed:match("외교[^\n]*"))
+	ok(not has(prosed, "전선을 줄이려면 제안하세요"), "산문: aggro에 화친 권고 문구 없음")
+end
+do
 	-- ② 활주로: 음수 국고 / 이번 턴 / 정상 3분기
 	ok(T.runway_phrase({ broke = true }) == "국고가 이미 마이너스입니다", "활주로: 마이너스 국고")
 	ok(T.runway_phrase({ runway = 0 }) == "이 추세면 이번 턴에 바닥납니다", "활주로: 0턴 축약")
@@ -1732,6 +1809,16 @@ do
 	ok(has(out1, "연맹이 성사됩니다") and has(out1, "최우선"), "외교: 연맹은 최우선으로")
 	ok(has(out1, "불가침이 성사되니"), "외교: 적대 이웃에 불가침이 가능하면 그것부터")
 
+	-- v74: aggro 종족 — 다전선이어도 화친 권고 대신 각개격파 권고, 성사 사실 나열은 유지
+	CALLS.n = 0
+	local out1a = with(f1, { stance = "aggro", border_enemies = { "nor" }, border_others = { "grn" },
+		diplo = { ok = true, peace = { "ksl" }, ally = {} },
+		strat = { hostile = { { key = "grn", stance = -1 } } } })
+	ok(has(out1a, "싸울수록 강해집니다") and has(out1a, "화친 대신 가장 약한 전선부터"),
+		"외교: aggro 다전선 → 각개격파 권고", out1a:match("[^\n]*전선이 3개[^\n]*"))
+	ok(not has(out1a, "화친해 줄이세요"), "외교: aggro에 화친 권고 없음")
+	ok(has(out1a, "• 화친:"), "외교: aggro라도 화친 성사 '사실' 나열은 유지")
+
 	-- ② 관계 눈금을 모르므로 '좋다/나쁘다'로 옮기지 않는다.
 	--    v63: 그 사실을 화면에서 강의하지도 않는다 — 동작(날값 표기)만 지킨다.
 	ok(not has(out1, "관계가 좋") and not has(out1, "관계가 나쁘") and not has(out1, "눈금"),
@@ -1815,7 +1902,7 @@ do
 			strat = { my_strength = o.mine, enemy = o.enemy or {} },
 			threats = { ok = o.tok ~= false, sieges = o.sieges or {}, threatened = o.threat or {},
 			            targets = o.targets or {}, settle = {} },
-			diplo = o.diplo, plan = o.plan,
+			diplo = o.diplo, plan = o.plan, stance = o.stance,
 		}
 	end
 	local function txt(o) return rec(table.concat(TW.build(S_of(o), {}), "\n")) end
@@ -1854,6 +1941,17 @@ do
 	ok(has(out1, "잔여 2정착지") and has(out1, "0.60배"), "전쟁: 전선 수치")
 	ok(has(out1, "지금이 정리할 때") and has(out1, "다음 수: "), "전쟁: 우세 전선은 정리 권고 + 다음 수")
 	ok(has(out1, "화친이 성사되니 지금 접으세요"), "전쟁: 불리 전선에 화친이 되면 그것부터")
+
+	-- v74: aggro 종족 — 불리 전선에도 화친 권고 금지, 각개격파 권고
+	ok(TW.verdict(0.5, 1000, true):find("약한 전선부터") ~= nil, "전쟁: aggro 열세 판정 = 각개격파(화친 없음)")
+	local outA = txt{ mine = 18000, border = { "big", "small" }, stance = "aggro",
+		war_set = { big = true, small = true, faraway = true },
+		enemy = { big = { regions = 9, strength = 30000, war_chest = 4000 },
+		          small = { regions = 2, strength = 6000, war_chest = 0 } },
+		diplo = { ok = true, peace = { "big" } } }
+	ok(not has(outA, "화친이 성사되니 지금 접으세요") and has(outA, "더 약한 전선부터 부수세요"),
+		"전쟁: aggro 불리 전선 → 각개격파 문구", outA:match("[^\n]*불리합니다[^\n]*"))
+	ok(has(outA, "싸울수록 강해지는 종족입니다"), "전쟁: aggro 다전선 → 최약체 정리 권고", outA:match("[^\n]*전선이 3개[^\n]*"))
 
 	-- ④ 방어가 공격보다 먼저
 	local out2 = txt{ mine = 9000, border = { "e1" }, war_set = { e1 = true },

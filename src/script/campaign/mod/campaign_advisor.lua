@@ -869,14 +869,23 @@ local function diagnose(S, D)
 	local nsiege  = (S.threats and #S.threats.sieges) or 0
 	local buffer  = D.buffer or 999
 	local turn    = num(S.turn, 99)
+	-- v74: aggro 종족(코른·그린스킨 등)에게 다전선은 위기가 아니라 평시다 — 스카브란드가
+	--   1턴부터 "사수하세요"를 듣던 실측 오진의 수정. 진짜 포위(nsiege)만 궁지로 남긴다.
+	local aggro   = (S.stance == "aggro")
 	local A = {}
 	local function put(label, m, note) if m > 0 then A[#A + 1] = { label = label, m = m, note = note } end end
 	local mj = 0
-	if nsiege > 0 then mj = 1 elseif D.immediate >= 3 then mj = 0.8 elseif D.immediate == 2 then mj = 0.35 end
-	put("궁지", mj, "포위·다전선으로 수세에 몰렸습니다. 전선을 줄이고 핵심 영토 사수에 집중하세요")
+	if nsiege > 0 then mj = 1
+	elseif D.immediate >= 3 then mj = aggro and 0.25 or 0.8
+	elseif D.immediate == 2 then mj = aggro and 0 or 0.35 end
+	put("궁지", mj, aggro
+		and "거점이 포위됐습니다. 구원이 최우선 — 단, 웅크리지 말고 가장 약한 전선부터 부숴 포위를 푸세요"
+		or  "포위·다전선으로 수세에 몰렸습니다. 전선을 줄이고 핵심 영토 사수에 집중하세요")
 	if regions >= 5 and field > 0 then
 		local mo = clamp((regions / field - 3) / 2, 0, 1) * ((D.immediate >= 2) and 1 or 0.4)
-		put("과확장", mo, "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요")
+		put("과확장", mo, aggro
+			and "영토에 비해 군대가 얇습니다. 확장을 멈출 게 아니라 군단을 늘려 전선을 받치세요"
+			or  "영토에 비해 군대가 얇고 다전선입니다. 확장을 멈추고 통합·방어를 우선하세요")
 	end
 	if D.money_trouble then
 		-- v53: 적자만이 아니라 '국고가 비었음'도 위기다. 장부상 +55라도 금고에
@@ -887,9 +896,13 @@ local function diagnose(S, D)
 	end
 	if D.immediate == 0 and D.net > 0 then
 		put("성장 정체", clamp((buffer - 12) / 8, 0, 1), "평온하나 금고만 쌓였습니다. 재투자·확장으로 우위를 굴리세요")
-		put("성장기", 0.6, "평온+흑자, 우위를 확보할 적기입니다. 경제와 영토를 키우세요")
+		put("성장기", 0.6, aggro
+			and "평온은 이 종족에게 정체입니다. 다음 표적을 정해 곧장 전쟁을 여세요"
+			or  "평온+흑자, 우위를 확보할 적기입니다. 경제와 영토를 키우세요")
 	end
-	put("초반 정착", clamp((11 - turn) / 10, 0, 1), "기반을 다지는 시기입니다. 인접 약체 흡수와 경제 기틀을 우선하세요")
+	put("초반 정착", clamp((11 - turn) / 10, 0, 1), aggro
+		and "기반은 연승으로 다집니다. 초반부터 교전을 끊지 말고 약한 이웃부터 각개격파하세요"
+		or  "기반을 다지는 시기입니다. 인접 약체 흡수와 경제 기틀을 우선하세요")
 	if D.wars > 0 then
 		put("소모전", 0.4, "전쟁이 이어지나 전선은 관리되고 있습니다. 결정적 지점에 전력을 모으세요")
 	end
@@ -1259,7 +1272,17 @@ local function build_prose(S, D, cand, prof)
 	end
 	-- N: 외교(모듈4) — 계획과의 일관성(제거=모순 문구, 화친 단계=무언 흡수).
 	--   v35: 화친·동맹이 동시에 가능하면 두 줄 대신 한 문장으로 병합(aggregation).
-	if S.diplo then
+	if S.diplo and S.stance == "aggro" then
+		-- v74: aggro 종족 — 화친 사실은 알리되 권하지 않는다(전투가 성장 엔진). 군사동맹은 유효.
+		if #S.diplo.peace > 0 then
+			local pn = first_names(S.diplo.peace, 2)
+			N[#N+1] = string.format("외교 — %s%s 화친이 성사되긴 합니다만, 이 종족은 싸울수록 강해집니다. 전선 축소는 화친이 아니라 각개격파로 하세요.",
+				pn, josa(pn, "과", "와"))
+		end
+		if #S.diplo.ally > 0 then
+			N[#N+1] = string.format("외교 — 군사동맹이 가능한 상대: %s. 제안을 검토하세요.", first_names(S.diplo.ally, 2))
+		end
+	elseif S.diplo then
 		local peace_names, trade_name = nil, nil
 		if #S.diplo.peace > 0 then
 			local elim_key, sup = nil, {}
@@ -1664,6 +1687,9 @@ end
 -- 단계: ①군사(peace 또는 elim) ②속주 완성 ③대비/자세. 최대 3단계.
 local function plan_generate(S, dglabel)
 	local steps, ST = {}, S.strat or {}
+	-- v74: aggro 종족은 화친이 곧 손해(전투가 성장 엔진) — 계획에서 peace 단계를 아예
+	--   만들지 않고, 전선 축소는 최약체 각개격파(elim)로 한다.
+	local aggro = (S.stance == "aggro")
 	-- v39: 영토 0(호드 제외) = 무엇보다 첫 거점 — 시작 공성/식민 유도(아콘 등 정착지 없는 출발)
 	if num(S.regions, 0) == 0 and S.can_capture ~= false then
 		steps[#steps + 1] = { kind = "posture", key = "settle", base = 0, last = 0, created = num(S.turn, 0) }
@@ -1671,7 +1697,7 @@ local function plan_generate(S, dglabel)
 	-- 생존 국면(궁지/재정위기/과확장): 화친 가능한 적 중 '가장 큰' 상대와 강화 → 최대 위협부터 전선 정리
 	local survival = (dglabel == "궁지" or dglabel == "재정 위기" or dglabel == "과확장")
 	local peace_key = nil
-	if survival then
+	if survival and not aggro then
 		local bestp
 		for _, k in ipairs((S.diplo and S.diplo.peace) or {}) do
 			local e = ST.enemy and ST.enemy[k]
@@ -1693,7 +1719,8 @@ local function plan_generate(S, dglabel)
 		end
 	end
 	-- 승산 판단(전력 대조): 제거 표적에 야전 전력 열세(<0.8)면 — 이길 수 없는 싸움 대신 강화(화친 가능 시)
-	if best and not peace_key and ST.my_strength then
+	-- v74: aggro 제외 — 열세라도 화친 전환 없이 최약체 각개격파를 유지한다.
+	if best and not peace_key and not aggro and ST.my_strength then
 		local es = ST.enemy and ST.enemy[best.key] and ST.enemy[best.key].strength
 		if es and es > 0 and (ST.my_strength / es) < 0.8 then
 			for _, k in ipairs((S.diplo and S.diplo.peace) or {}) do
@@ -1731,7 +1758,7 @@ local function plan_generate(S, dglabel)
 	--   하나도 안 서면, 파산 직전·수도 포위 상황에서도 "다음 전쟁을 설계"가 나왔다(재현 확인).
 	--   생존 국면이면 미래 대비(prep)보다 당면 자세가 먼저다.
 	if #steps < 3 then
-		local crisis = (dglabel == "재정 위기" and "retrench") or (dglabel == "궁지" and "hold") or nil
+		local crisis = (dglabel == "재정 위기" and "retrench") or (dglabel == "궁지" and (aggro and "momentum" or "hold")) or nil
 		if #steps == 0 and crisis then
 			steps[#steps + 1] = { kind = "posture", key = crisis, base = 0, last = 0, created = num(S.turn, 0) }
 		elseif ST.endgame and ST.endgame.armed then
@@ -1884,14 +1911,19 @@ function plan_prose_lines(S)
 			line = string.format("%s 위기 대비 — '%s' %s턴 발동 예정(현재 %s턴). 자금과 예비군을 비축하세요.",
 				NUMS[i], endgame_disp(s.key), tostring(s.base or "?"), tostring(num(S.turn, "?")))
 		elseif s.kind == "posture" then
+			local ag = (S.stance == "aggro")   -- v74: 성향별 어휘 — 같은 자세 키라도 aggro는 공세형 문구
 			local m = {
-				consolidate = "내실 — 확장을 멈추고 통합·방어를 정비",
+				consolidate = ag and "군단 증설 — 영토 대비 군대가 얇습니다. 새 전선을 열기 전에 군단부터 채우세요"
+				                  or "내실 — 확장을 멈추고 통합·방어를 정비",
 				expand = "확장 준비 — 약한 이웃 방면으로 다음 전쟁을 설계",
-				tech = "내실 — 기술·경제 축적으로 다음 도약을 준비",
+				tech = ag and "재정비 — 군단을 채우고 다음 표적을 고르세요. 오래 쉬면 약해집니다"
+				           or "내실 — 기술·경제 축적으로 다음 도약을 준비",
 				settle = "거점 확보 — 아직 정착지가 없습니다. 첫 정착지를 점령해 기반부터 만드세요",
-				retrench = "긴축 — 적자를 멈추는 게 먼저입니다. 유지비 큰 군단을 줄이고 불필요한 지출을 정리하세요",   -- v40
+				retrench = ag and "약탈로 메우기 — 적자는 전장에서 법니다. 부유한 적 정착지를 약탈·점령해 수입을 확보하세요"
+				                or "긴축 — 적자를 멈추는 게 먼저입니다. 유지비 큰 군단을 줄이고 불필요한 지출을 정리하세요",   -- v40
 				hold = "사수 — 전선을 좁히고 핵심 정착지에 병력을 모아 버티세요",                                    -- v40
 				raid = "약탈 — 정착하지 않는 종족입니다. 약탈·파괴로 자금과 성장을 벌어들이세요",                    -- v40
+				momentum = "기세 유지 — 멈추면 약해집니다. 가장 약한 전선부터 각개격파해 포위망을 허무세요",          -- v74
 			}
 			line = NUMS[i] .. " " .. (m[s.key] or "자세 정비") .. "."
 			-- v40: 첫 정착지를 '어디'로 잡을지까지 — 영토0 앵커 스캔 결과에서 지목.
@@ -2671,6 +2703,7 @@ local function ensure_base()
 		local S = gather_state()
 		local prof = get_profile(S)                        -- 진영 전략 프로필
 		S.melee_race = (prof and prof.melee) or false      -- v33: 근접 정체성 종족(원거리 경고 제외)
+		S.stance = (prof and prof.stance) or nil           -- v74: 전략 성향("aggro"=전투가 성장 엔진 — 화친·웅크림 권고 반전)
 		S.resource = gather_resource(prof)                 -- 종족 고유 자원(①)
 		local hist = read_history()                        -- 턴별 추세
 		S.trend = compute_trend(S, hist)
